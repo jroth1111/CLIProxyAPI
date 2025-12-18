@@ -134,6 +134,25 @@ func DecodeAuthJSON(raw []byte, settings AuthEncryptionSettings) ([]byte, bool, 
 	return plaintext, true, nil
 }
 
+func writeAuthJSONFileUnlocked(path string, jsonBytes []byte, settings AuthEncryptionSettings) error {
+	payload := jsonBytes
+	if settings.Enabled {
+		secret := ResolveAuthEncryptionSecret(settings.Secret)
+		if strings.TrimSpace(secret) == "" {
+			return fmt.Errorf("securefile: auth encryption enabled but no encryption key configured")
+		}
+		enc, err := encryptBytes(jsonBytes, secret)
+		if err != nil {
+			return err
+		}
+		payload = enc
+	}
+	if err := EnsurePrivateDir(filepath.Dir(path)); err != nil {
+		return err
+	}
+	return AtomicWriteFile(path, payload, 0o600)
+}
+
 // ReadAuthJSONFile reads path, locking path+".lock", and returns decrypted JSON when needed.
 func ReadAuthJSONFile(path string) ([]byte, bool, error) {
 	settings := CurrentAuthEncryption()
@@ -156,7 +175,7 @@ func ReadAuthJSONFile(path string) ([]byte, bool, error) {
 		encrypted = wasEncrypted
 		// Best-effort migration: if encryption is enabled and we read plaintext, re-save encrypted.
 		if settings.Enabled && !wasEncrypted && settings.AllowPlaintextFallback {
-			if err := WriteAuthJSONFile(path, plaintext); err != nil {
+			if err := writeAuthJSONFileUnlocked(path, plaintext, settings); err != nil {
 				// ignore; caller still gets plaintext content
 			}
 		}
@@ -177,21 +196,6 @@ func WriteAuthJSONFile(path string, jsonBytes []byte) error {
 	settings := CurrentAuthEncryption()
 	lockPath := path + ".lock"
 	return WithLock(lockPath, 10*time.Second, func() error {
-		payload := jsonBytes
-		if settings.Enabled {
-			secret := ResolveAuthEncryptionSecret(settings.Secret)
-			if strings.TrimSpace(secret) == "" {
-				return fmt.Errorf("securefile: auth encryption enabled but no encryption key configured")
-			}
-			enc, err := encryptBytes(jsonBytes, secret)
-			if err != nil {
-				return err
-			}
-			payload = enc
-		}
-		if err := EnsurePrivateDir(filepath.Dir(path)); err != nil {
-			return err
-		}
-		return AtomicWriteFile(path, payload, 0o600)
+		return writeAuthJSONFileUnlocked(path, jsonBytes, settings)
 	})
 }

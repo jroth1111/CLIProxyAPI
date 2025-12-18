@@ -80,14 +80,7 @@ func isSensitiveJSONKey(key string) bool {
 	if _, ok := sensitiveJSONKeys[normalized]; ok {
 		return true
 	}
-	// Heuristics for common secret-ish keys without overmatching token usage metrics.
-	if strings.HasSuffix(normalized, "_secret") || strings.Contains(normalized, "secret") {
-		return true
-	}
-	if strings.HasSuffix(normalized, "_token") {
-		return true
-	}
-	if strings.HasSuffix(normalized, "_key") && (normalized == "api_key" || normalized == "secret_access_key") {
+	if strings.HasSuffix(normalized, "_secret") {
 		return true
 	}
 	return false
