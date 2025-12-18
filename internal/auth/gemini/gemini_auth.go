@@ -133,11 +133,18 @@ func (g *GeminiAuth) createTokenStorage(ctx context.Context, config *oauth2.Conf
 		},
 		oauthhttp.DefaultRetryConfig(),
 	)
-	if err != nil {
+	if err != nil && status == 0 {
 		return nil, fmt.Errorf("failed to execute request: %w", err)
 	}
 	if status < http.StatusOK || status >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("get user info request failed with status %d: %s", status, string(bodyBytes))
+		msg := strings.TrimSpace(string(bodyBytes))
+		if err != nil {
+			return nil, fmt.Errorf("get user info request failed with status %d: %s: %w", status, msg, err)
+		}
+		return nil, fmt.Errorf("get user info request failed with status %d: %s", status, msg)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute request: %w", err)
 	}
 
 	emailResult := gjson.GetBytes(bodyBytes, "email")

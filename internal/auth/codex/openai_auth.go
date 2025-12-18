@@ -115,11 +115,18 @@ func (o *CodexAuth) ExchangeCodeForTokensWithRedirectURI(ctx context.Context, co
 		},
 		oauthhttp.DefaultRetryConfig(),
 	)
-	if err != nil {
+	if err != nil && status == 0 {
 		return nil, fmt.Errorf("token exchange request failed: %w", err)
 	}
 	if status != http.StatusOK {
-		return nil, fmt.Errorf("token exchange failed with status %d: %s", status, strings.TrimSpace(string(body)))
+		msg := strings.TrimSpace(string(body))
+		if err != nil {
+			return nil, fmt.Errorf("token exchange failed with status %d: %s: %w", status, msg, err)
+		}
+		return nil, fmt.Errorf("token exchange failed with status %d: %s", status, msg)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("token exchange request failed: %w", err)
 	}
 
 	// Parse token response
@@ -197,11 +204,18 @@ func (o *CodexAuth) RefreshTokens(ctx context.Context, refreshToken string) (*Co
 		},
 		oauthhttp.DefaultRetryConfig(),
 	)
-	if err != nil {
+	if err != nil && status == 0 {
 		return nil, fmt.Errorf("token refresh request failed: %w", err)
 	}
 	if status != http.StatusOK {
-		return nil, fmt.Errorf("token refresh failed with status %d: %s", status, strings.TrimSpace(string(body)))
+		msg := strings.TrimSpace(string(body))
+		if err != nil {
+			return nil, fmt.Errorf("token refresh failed with status %d: %s: %w", status, msg, err)
+		}
+		return nil, fmt.Errorf("token refresh failed with status %d: %s", status, msg)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("token refresh request failed: %w", err)
 	}
 
 	var tokenResp struct {

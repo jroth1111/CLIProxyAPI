@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/oauthhttp"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/oauthflow"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/oauthhttp"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 )
 
@@ -73,12 +73,19 @@ func (c *DeviceFlowClient) RequestDeviceCode(ctx context.Context) (*DeviceCodeRe
 		},
 		oauthhttp.DefaultRetryConfig(),
 	)
-	if err != nil {
+	if err != nil && status == 0 {
 		return nil, NewAuthenticationError(ErrDeviceCodeFailed, err)
 	}
 
 	if !isHTTPSuccess(status) {
-		return nil, NewAuthenticationError(ErrDeviceCodeFailed, fmt.Errorf("status %d: %s", status, string(bodyBytes)))
+		msg := strings.TrimSpace(string(bodyBytes))
+		if err != nil {
+			return nil, NewAuthenticationError(ErrDeviceCodeFailed, fmt.Errorf("status %d: %s: %w", status, msg, err))
+		}
+		return nil, NewAuthenticationError(ErrDeviceCodeFailed, fmt.Errorf("status %d: %s", status, msg))
+	}
+	if err != nil {
+		return nil, NewAuthenticationError(ErrDeviceCodeFailed, err)
 	}
 
 	var deviceCode DeviceCodeResponse
@@ -205,7 +212,7 @@ func (c *DeviceFlowClient) exchangeDeviceCode(ctx context.Context, deviceCode st
 		},
 		oauthhttp.DefaultRetryConfig(),
 	)
-	if err != nil {
+	if err != nil && status == 0 {
 		return nil, NewAuthenticationError(ErrTokenExchangeFailed, err)
 	}
 
@@ -273,12 +280,19 @@ func (c *DeviceFlowClient) FetchUserInfo(ctx context.Context, accessToken string
 		},
 		oauthhttp.DefaultRetryConfig(),
 	)
-	if err != nil {
+	if err != nil && status == 0 {
 		return "", NewAuthenticationError(ErrUserInfoFailed, err)
 	}
 
 	if !isHTTPSuccess(status) {
-		return "", NewAuthenticationError(ErrUserInfoFailed, fmt.Errorf("status %d: %s", status, string(bodyBytes)))
+		msg := strings.TrimSpace(string(bodyBytes))
+		if err != nil {
+			return "", NewAuthenticationError(ErrUserInfoFailed, fmt.Errorf("status %d: %s: %w", status, msg, err))
+		}
+		return "", NewAuthenticationError(ErrUserInfoFailed, fmt.Errorf("status %d: %s", status, msg))
+	}
+	if err != nil {
+		return "", NewAuthenticationError(ErrUserInfoFailed, err)
 	}
 
 	var userInfo struct {

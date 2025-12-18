@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
@@ -123,13 +124,19 @@ func (c *CopilotAuth) GetCopilotAPIToken(ctx context.Context, githubAccessToken 
 		},
 		oauthhttp.DefaultRetryConfig(),
 	)
-	if err != nil {
+	if err != nil && status == 0 {
 		return nil, NewAuthenticationError(ErrTokenExchangeFailed, err)
 	}
 
 	if !isHTTPSuccess(status) {
-		return nil, NewAuthenticationError(ErrTokenExchangeFailed,
-			fmt.Errorf("status %d: %s", status, string(bodyBytes)))
+		msg := strings.TrimSpace(string(bodyBytes))
+		if err != nil {
+			return nil, NewAuthenticationError(ErrTokenExchangeFailed, fmt.Errorf("status %d: %s: %w", status, msg, err))
+		}
+		return nil, NewAuthenticationError(ErrTokenExchangeFailed, fmt.Errorf("status %d: %s", status, msg))
+	}
+	if err != nil {
+		return nil, NewAuthenticationError(ErrTokenExchangeFailed, err)
 	}
 
 	var apiToken CopilotAPIToken

@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/oauthhttp"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/oauthflow"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/oauthhttp"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	log "github.com/sirupsen/logrus"
 )
@@ -140,7 +140,7 @@ func (qa *QwenAuth) RefreshTokens(ctx context.Context, refreshToken string) (*Qw
 		},
 		oauthhttp.DefaultRetryConfig(),
 	)
-	if err != nil {
+	if err != nil && status == 0 {
 		return nil, fmt.Errorf("token refresh request failed: %w", err)
 	}
 
@@ -149,7 +149,14 @@ func (qa *QwenAuth) RefreshTokens(ctx context.Context, refreshToken string) (*Qw
 		if err = json.Unmarshal(body, &errorData); err == nil {
 			return nil, fmt.Errorf("token refresh failed: %v - %v", errorData["error"], errorData["error_description"])
 		}
-		return nil, fmt.Errorf("token refresh failed: %s", string(body))
+		msg := strings.TrimSpace(string(body))
+		if err != nil {
+			return nil, fmt.Errorf("token refresh failed: %s: %w", msg, err)
+		}
+		return nil, fmt.Errorf("token refresh failed: %s", msg)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("token refresh request failed: %w", err)
 	}
 
 	var tokenData QwenTokenResponse
@@ -198,12 +205,19 @@ func (qa *QwenAuth) InitiateDeviceFlow(ctx context.Context) (*DeviceFlow, error)
 		},
 		oauthhttp.DefaultRetryConfig(),
 	)
-	if err != nil {
+	if err != nil && status == 0 {
 		return nil, fmt.Errorf("device authorization request failed: %w", err)
 	}
 
 	if status != http.StatusOK {
-		return nil, fmt.Errorf("device authorization failed: %d. Response: %s", status, string(body))
+		msg := strings.TrimSpace(string(body))
+		if err != nil {
+			return nil, fmt.Errorf("device authorization failed: %d. Response: %s: %w", status, msg, err)
+		}
+		return nil, fmt.Errorf("device authorization failed: %d. Response: %s", status, msg)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("device authorization request failed: %w", err)
 	}
 
 	var result DeviceFlow

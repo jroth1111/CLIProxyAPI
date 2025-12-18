@@ -96,11 +96,18 @@ func (p *OAuthProvider) ExchangeCode(ctx context.Context, session oauthflow.OAut
 		},
 		oauthhttp.DefaultRetryConfig(),
 	)
-	if err != nil {
+	if err != nil && status == 0 {
 		return nil, err
 	}
 	if status < http.StatusOK || status >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("gemini oauth token exchange failed: status %d: %s", status, strings.TrimSpace(string(body)))
+		msg := strings.TrimSpace(string(body))
+		if err != nil {
+			return nil, fmt.Errorf("gemini oauth token exchange failed: status %d: %s: %w", status, msg, err)
+		}
+		return nil, fmt.Errorf("gemini oauth token exchange failed: status %d: %s", status, msg)
+	}
+	if err != nil {
+		return nil, err
 	}
 
 	var token googleTokenResponse
@@ -170,11 +177,18 @@ func (p *OAuthProvider) Refresh(ctx context.Context, refreshToken string) (*oaut
 		},
 		oauthhttp.DefaultRetryConfig(),
 	)
-	if err != nil {
+	if err != nil && status == 0 {
 		return nil, err
 	}
 	if status < http.StatusOK || status >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("gemini oauth token refresh failed: status %d: %s", status, strings.TrimSpace(string(body)))
+		msg := strings.TrimSpace(string(body))
+		if err != nil {
+			return nil, fmt.Errorf("gemini oauth token refresh failed: status %d: %s: %w", status, msg, err)
+		}
+		return nil, fmt.Errorf("gemini oauth token refresh failed: status %d: %s", status, msg)
+	}
+	if err != nil {
+		return nil, err
 	}
 
 	var token googleTokenResponse

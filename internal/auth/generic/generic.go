@@ -2,7 +2,9 @@ package generic
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -16,6 +18,11 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
+
+func tokenFingerprint(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:16])
+}
 
 // CheckOAuth2Token validates a token against a generic OAuth2 introspection endpoint.
 func CheckOAuth2Token(ctx context.Context, token string, cfg config.GenericAuth) (*coreauth.Auth, error) {
@@ -51,6 +58,11 @@ func CheckOAuth2Token(ctx context.Context, token string, cfg config.GenericAuth)
 	emailField := cfg.EmailField
 	if emailField == "" {
 		emailField = "email"
+	}
+
+	providerID := strings.TrimSpace(cfg.ProviderID)
+	if providerID == "" {
+		providerID = "generic"
 	}
 
 	// 2. Determine if it's an introspection endpoint (RFC 7662) or UserInfo (GET)
@@ -124,7 +136,7 @@ func CheckOAuth2Token(ctx context.Context, token string, cfg config.GenericAuth)
 		},
 		oauthhttp.DefaultRetryConfig(),
 	)
-	if err != nil {
+	if err != nil && status == 0 {
 		return nil, fmt.Errorf("token validation request failed: %w", err)
 	}
 	if status >= http.StatusBadRequest {
@@ -132,7 +144,13 @@ func CheckOAuth2Token(ctx context.Context, token string, cfg config.GenericAuth)
 		if msg == "" {
 			msg = fmt.Sprintf("status %d", status)
 		}
+		if err != nil {
+			return nil, fmt.Errorf("token validation failed: %s: %w", msg, err)
+		}
 		return nil, fmt.Errorf("token validation failed: %s", msg)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("token validation request failed: %w", err)
 	}
 
 	var result map[string]interface{}
@@ -150,7 +168,7 @@ func CheckOAuth2Token(ctx context.Context, token string, cfg config.GenericAuth)
 
 	// 5. Map to Auth struct
 	auth := &coreauth.Auth{
-		Provider:  cfg.ProviderID,
+		Provider:  providerID,
 		Metadata:  make(map[string]any),
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
@@ -163,11 +181,8 @@ func CheckOAuth2Token(ctx context.Context, token string, cfg config.GenericAuth)
 	} else if id, ok := result["id"].(string); ok {
 		auth.ID = id // Fallback
 	} else {
-		// If no ID found, generate one or fail? 
-		// For now, let's use a hash of the token if strictly necessary, but better to fail.
-		// Or use the token itself as ID? No, that's bad.
-		// Let's use "generic-user" + timestamp
-		auth.ID = fmt.Sprintf("generic-%d", time.Now().UnixNano())
+		// No stable user identifier available; fall back to a deterministic token fingerprint.
+		auth.ID = fmt.Sprintf("%s-%s", providerID, tokenFingerprint(token))
 	}
 
 	// Extract Email

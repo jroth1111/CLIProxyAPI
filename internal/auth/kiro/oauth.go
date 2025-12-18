@@ -203,13 +203,19 @@ func (o *KiroOAuth) exchangeCodeForToken(ctx context.Context, code, codeVerifier
 		},
 		oauthhttp.DefaultRetryConfig(),
 	)
-	if err != nil {
+	if err != nil && status == 0 {
 		return nil, fmt.Errorf("token request failed: %w", err)
 	}
 
 	if status != http.StatusOK {
 		log.Debugf("token exchange failed (status %d): %s", status, string(respBody))
+		if err != nil {
+			return nil, fmt.Errorf("token exchange failed (status %d): %w", status, err)
+		}
 		return nil, fmt.Errorf("token exchange failed (status %d)", status)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("token request failed: %w", err)
 	}
 
 	var tokenResp KiroTokenResponse
@@ -265,13 +271,19 @@ func (o *KiroOAuth) RefreshToken(ctx context.Context, refreshToken string) (*Kir
 		},
 		oauthhttp.DefaultRetryConfig(),
 	)
-	if err != nil {
+	if err != nil && status == 0 {
 		return nil, fmt.Errorf("refresh request failed: %w", err)
 	}
 
 	if status != http.StatusOK {
 		log.Debugf("token refresh failed (status %d): %s", status, string(respBody))
+		if err != nil {
+			return nil, fmt.Errorf("token refresh failed (status %d): %w", status, err)
+		}
 		return nil, fmt.Errorf("token refresh failed (status %d)", status)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("refresh request failed: %w", err)
 	}
 
 	var tokenResp KiroTokenResponse

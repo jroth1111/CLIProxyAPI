@@ -55,7 +55,8 @@ func DefaultRetryConfig() RetryConfig {
 //   - status: HTTP status code (0 when no HTTP response was received)
 //   - headers: response headers (nil when no HTTP response was received)
 //   - body: response body (may be partial if ErrBodyTooLarge)
-//   - err: network/build errors, or ErrBodyTooLarge when body exceeds limit
+//   - err: network/build errors, ErrBodyTooLarge when body exceeds limit, or a retry exhaustion error when the final
+//     response status was retryable (e.g. repeated 503s)
 func Do(
 	ctx context.Context,
 	client *http.Client,
@@ -125,11 +126,11 @@ func Do(
 			return status, headers, body, err
 		}
 
-		if attempt >= cfg.MaxAttempts {
-			return status, headers, body, nil
-		}
 		if _, retryable := cfg.RetryOnStatus[status]; !retryable {
 			return status, headers, body, nil
+		}
+		if attempt >= cfg.MaxAttempts {
+			return status, headers, body, fmt.Errorf("oauthhttp: request failed with status %d after %d attempts", status, cfg.MaxAttempts)
 		}
 
 		delay := backoff

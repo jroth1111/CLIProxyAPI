@@ -184,11 +184,18 @@ func (o *ClaudeAuth) ExchangeCodeForTokensWithRedirectURI(ctx context.Context, c
 		},
 		oauthhttp.DefaultRetryConfig(),
 	)
-	if err != nil {
+	if err != nil && status == 0 {
 		return nil, fmt.Errorf("token exchange request failed: %w", err)
 	}
 	if status != http.StatusOK {
-		return nil, fmt.Errorf("token exchange failed with status %d: %s", status, strings.TrimSpace(string(body)))
+		msg := strings.TrimSpace(string(body))
+		if err != nil {
+			return nil, fmt.Errorf("token exchange failed with status %d: %s: %w", status, msg, err)
+		}
+		return nil, fmt.Errorf("token exchange failed with status %d: %s", status, msg)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("token exchange request failed: %w", err)
 	}
 
 	var tokenResp tokenResponse
@@ -254,11 +261,18 @@ func (o *ClaudeAuth) RefreshTokens(ctx context.Context, refreshToken string) (*C
 		},
 		oauthhttp.DefaultRetryConfig(),
 	)
-	if err != nil {
+	if err != nil && status == 0 {
 		return nil, fmt.Errorf("token refresh request failed: %w", err)
 	}
 	if status != http.StatusOK {
-		return nil, fmt.Errorf("token refresh failed with status %d: %s", status, strings.TrimSpace(string(body)))
+		msg := strings.TrimSpace(string(body))
+		if err != nil {
+			return nil, fmt.Errorf("token refresh failed with status %d: %s: %w", status, msg, err)
+		}
+		return nil, fmt.Errorf("token refresh failed with status %d: %s", status, msg)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("token refresh request failed: %w", err)
 	}
 
 	var tokenResp tokenResponse

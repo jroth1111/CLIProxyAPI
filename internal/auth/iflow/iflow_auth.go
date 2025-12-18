@@ -122,13 +122,20 @@ func (ia *IFlowAuth) doTokenRequest(ctx context.Context, form url.Values) (*IFlo
 		},
 		oauthhttp.DefaultRetryConfig(),
 	)
-	if err != nil {
+	if err != nil && status == 0 {
 		return nil, fmt.Errorf("iflow token: request failed: %w", err)
 	}
 
 	if status != http.StatusOK {
 		log.Debugf("iflow token request failed: status=%d body=%s", status, string(body))
-		return nil, fmt.Errorf("iflow token: %d %s", status, strings.TrimSpace(string(body)))
+		msg := strings.TrimSpace(string(body))
+		if err != nil {
+			return nil, fmt.Errorf("iflow token: %d %s: %w", status, msg, err)
+		}
+		return nil, fmt.Errorf("iflow token: %d %s", status, msg)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("iflow token: request failed: %w", err)
 	}
 
 	var tokenResp IFlowTokenResponse
@@ -192,13 +199,20 @@ func (ia *IFlowAuth) FetchUserInfo(ctx context.Context, accessToken string) (*us
 		},
 		oauthhttp.DefaultRetryConfig(),
 	)
-	if err != nil {
+	if err != nil && status == 0 {
 		return nil, fmt.Errorf("iflow api key: request failed: %w", err)
 	}
 
 	if status != http.StatusOK {
 		log.Debugf("iflow api key failed: status=%d body=%s", status, string(body))
-		return nil, fmt.Errorf("iflow api key: %d %s", status, strings.TrimSpace(string(body)))
+		msg := strings.TrimSpace(string(body))
+		if err != nil {
+			return nil, fmt.Errorf("iflow api key: %d %s: %w", status, msg, err)
+		}
+		return nil, fmt.Errorf("iflow api key: %d %s", status, msg)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("iflow api key: request failed: %w", err)
 	}
 
 	var result userInfoResponse
