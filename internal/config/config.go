@@ -57,6 +57,9 @@ type Config struct {
 	// QuotaExceeded defines the behavior when a quota is exceeded.
 	QuotaExceeded QuotaExceeded `yaml:"quota-exceeded" json:"quota-exceeded"`
 
+	// Routing controls credential selection behavior.
+	Routing RoutingConfig `yaml:"routing" json:"routing"`
+
 	// WebsocketAuth enables or disables authentication for the WebSocket API.
 	WebsocketAuth bool `yaml:"ws-auth" json:"ws-auth"`
 
@@ -131,6 +134,13 @@ type QuotaExceeded struct {
 
 	// SwitchPreviewModel indicates whether to automatically switch to a preview model when a quota is exceeded.
 	SwitchPreviewModel bool `yaml:"switch-preview-model" json:"switch-preview-model"`
+}
+
+// RoutingConfig configures how credentials are selected for requests.
+type RoutingConfig struct {
+	// Strategy selects the credential selection strategy.
+	// Supported values: "fill-first" (default), "round-robin".
+	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
 }
 
 // AmpModelMapping defines a model name mapping for Amp CLI requests.
@@ -387,7 +397,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.DisableCooling = false
 	cfg.AmpCode.RestrictManagementToLocalhost = false // Default to false: API key auth is sufficient
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
-	cfg.IncognitoBrowser = false                     // Default to normal browser (AWS uses incognito by force)
+	cfg.IncognitoBrowser = false // Default to normal browser (AWS uses incognito by force)
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {
 			// In cloud deploy mode, if YAML parsing fails, return empty config instead of error.
