@@ -226,13 +226,6 @@ func (h *GeminiAPIHandler) GeminiHandler(c *gin.Context) {
 func (h *GeminiAPIHandler) handleStreamGenerateContent(c *gin.Context, modelName string, rawJSON []byte) {
 	alt := h.GetAlt(c)
 
-	if alt == "" {
-		c.Header("Content-Type", "text/event-stream")
-		c.Header("Cache-Control", "no-cache")
-		c.Header("Connection", "keep-alive")
-		c.Header("Access-Control-Allow-Origin", "*")
-	}
-
 	// Get the http.Flusher interface to manually flush the response.
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
@@ -247,8 +240,56 @@ func (h *GeminiAPIHandler) handleStreamGenerateContent(c *gin.Context, modelName
 
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
 	dataChan, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, alt)
-	h.forwardGeminiStream(c, flusher, alt, func(err error) { cliCancel(err) }, dataChan, errChan)
-	return
+
+	// Peek at the first chunk
+	select {
+	case <-c.Request.Context().Done():
+		cliCancel(c.Request.Context().Err())
+		return
+	case errMsg := <-errChan:
+		// Upstream failed immediately. Return proper error status and JSON.
+		h.WriteErrorResponse(c, errMsg)
+		if errMsg != nil {
+			cliCancel(errMsg.Error)
+		} else {
+			cliCancel(nil)
+		}
+		return
+	case chunk, ok := <-dataChan:
+		if !ok {
+			// Closed without data
+			if alt == "" {
+				c.Header("Content-Type", "text/event-stream")
+				c.Header("Cache-Control", "no-cache")
+				c.Header("Connection", "keep-alive")
+				c.Header("Access-Control-Allow-Origin", "*")
+			}
+			flusher.Flush()
+			cliCancel(nil)
+			return
+		}
+
+		// Success! Set headers.
+		if alt == "" {
+			c.Header("Content-Type", "text/event-stream")
+			c.Header("Cache-Control", "no-cache")
+			c.Header("Connection", "keep-alive")
+			c.Header("Access-Control-Allow-Origin", "*")
+		}
+
+		// Write first chunk
+		if alt == "" {
+			_, _ = c.Writer.Write([]byte("data: "))
+			_, _ = c.Writer.Write(chunk)
+			_, _ = c.Writer.Write([]byte("\n\n"))
+		} else {
+			_, _ = c.Writer.Write(chunk)
+		}
+		flusher.Flush()
+
+		// Continue
+		h.forwardGeminiStream(c, flusher, alt, func(err error) { cliCancel(err) }, dataChan, errChan)
+	}
 }
 
 // handleCountTokens handles token counting requests for Gemini models.
@@ -297,6 +338,17 @@ func (h *GeminiAPIHandler) handleGenerateContent(c *gin.Context, modelName strin
 }
 
 func (h *GeminiAPIHandler) forwardGeminiStream(c *gin.Context, flusher http.Flusher, alt string, cancel func(error), data <-chan []byte, errs <-chan *interfaces.ErrorMessage) {
+	var keepAlive <-chan time.Time
+	var keepAliveTicker *time.Ticker
+	if alt == "" {
+		keepAliveInterval := handlers.StreamingKeepAliveInterval(h.Cfg)
+		if keepAliveInterval > 0 {
+			keepAliveTicker = time.NewTicker(keepAliveInterval)
+			defer keepAliveTicker.Stop()
+			keepAlive = keepAliveTicker.C
+		}
+	}
+	var terminalErr *interfaces.ErrorMessage
 	for {
 		select {
 		case <-c.Request.Context().Done():
@@ -304,6 +356,35 @@ func (h *GeminiAPIHandler) forwardGeminiStream(c *gin.Context, flusher http.Flus
 			return
 		case chunk, ok := <-data:
 			if !ok {
+				// Prefer surfacing a terminal error if one is pending.
+				if terminalErr == nil {
+					select {
+					case errMsg, ok := <-errs:
+						if ok && errMsg != nil {
+							terminalErr = errMsg
+						}
+					default:
+					}
+				}
+				if terminalErr != nil {
+					status := http.StatusInternalServerError
+					if terminalErr.StatusCode > 0 {
+						status = terminalErr.StatusCode
+					}
+					errText := http.StatusText(status)
+					if terminalErr.Error != nil && terminalErr.Error.Error() != "" {
+						errText = terminalErr.Error.Error()
+					}
+					body := handlers.BuildErrorResponseBody(status, errText)
+					if alt == "" {
+						_, _ = fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", string(body))
+					} else {
+						_, _ = c.Writer.Write(body)
+					}
+					flusher.Flush()
+					cancel(terminalErr.Error)
+					return
+				}
 				cancel(nil)
 				return
 			}
@@ -320,7 +401,21 @@ func (h *GeminiAPIHandler) forwardGeminiStream(c *gin.Context, flusher http.Flus
 				continue
 			}
 			if errMsg != nil {
-				h.WriteErrorResponse(c, errMsg)
+				terminalErr = errMsg
+				status := http.StatusInternalServerError
+				if errMsg.StatusCode > 0 {
+					status = errMsg.StatusCode
+				}
+				errText := http.StatusText(status)
+				if errMsg.Error != nil && errMsg.Error.Error() != "" {
+					errText = errMsg.Error.Error()
+				}
+				body := handlers.BuildErrorResponseBody(status, errText)
+				if alt == "" {
+					_, _ = fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", string(body))
+				} else {
+					_, _ = c.Writer.Write(body)
+				}
 				flusher.Flush()
 			}
 			var execErr error
@@ -329,7 +424,10 @@ func (h *GeminiAPIHandler) forwardGeminiStream(c *gin.Context, flusher http.Flus
 			}
 			cancel(execErr)
 			return
-		case <-time.After(500 * time.Millisecond):
+		case <-keepAlive:
+			// Keep the client connection alive during long pauses between chunks (SSE mode).
+			_, _ = c.Writer.Write([]byte(": keep-alive\n\n"))
+			flusher.Flush()
 		}
 	}
 }

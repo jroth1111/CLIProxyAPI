@@ -128,11 +128,6 @@ func (h *OpenAIResponsesAPIHandler) handleNonStreamingResponse(c *gin.Context, r
 //   - c: The Gin context containing the HTTP request and response
 //   - rawJSON: The raw JSON bytes of the OpenAIResponses-compatible request
 func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON []byte) {
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Header("Access-Control-Allow-Origin", "*")
-
 	// Get the http.Flusher interface to manually flush the response.
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
@@ -149,11 +144,63 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 	modelName := gjson.GetBytes(rawJSON, "model").String()
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
 	dataChan, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "")
-	h.forwardResponsesStream(c, flusher, func(err error) { cliCancel(err) }, dataChan, errChan)
-	return
+
+	// Peek at the first chunk
+	select {
+	case <-c.Request.Context().Done():
+		cliCancel(c.Request.Context().Err())
+		return
+	case errMsg := <-errChan:
+		// Upstream failed immediately. Return proper error status and JSON.
+		h.WriteErrorResponse(c, errMsg)
+		if errMsg != nil {
+			cliCancel(errMsg.Error)
+		} else {
+			cliCancel(nil)
+		}
+		return
+	case chunk, ok := <-dataChan:
+		if !ok {
+			// Stream closed without data? Send headers and done.
+			c.Header("Content-Type", "text/event-stream")
+			c.Header("Cache-Control", "no-cache")
+			c.Header("Connection", "keep-alive")
+			c.Header("Access-Control-Allow-Origin", "*")
+			_, _ = c.Writer.Write([]byte("\n"))
+			flusher.Flush()
+			cliCancel(nil)
+			return
+		}
+
+		// Success! Set headers.
+		c.Header("Content-Type", "text/event-stream")
+		c.Header("Cache-Control", "no-cache")
+		c.Header("Connection", "keep-alive")
+		c.Header("Access-Control-Allow-Origin", "*")
+
+		// Write first chunk logic (matching forwardResponsesStream)
+		if bytes.HasPrefix(chunk, []byte("event:")) {
+			_, _ = c.Writer.Write([]byte("\n"))
+		}
+		_, _ = c.Writer.Write(chunk)
+		_, _ = c.Writer.Write([]byte("\n"))
+		flusher.Flush()
+
+		// Continue
+		h.forwardResponsesStream(c, flusher, func(err error) { cliCancel(err) }, dataChan, errChan)
+	}
 }
 
 func (h *OpenAIResponsesAPIHandler) forwardResponsesStream(c *gin.Context, flusher http.Flusher, cancel func(error), data <-chan []byte, errs <-chan *interfaces.ErrorMessage) {
+	keepAliveInterval := handlers.StreamingKeepAliveInterval(h.Cfg)
+	var keepAlive *time.Ticker
+	var keepAliveC <-chan time.Time
+	if keepAliveInterval > 0 {
+		keepAlive = time.NewTicker(keepAliveInterval)
+		defer keepAlive.Stop()
+		keepAliveC = keepAlive.C
+	}
+	var terminalErr *interfaces.ErrorMessage
 	for {
 		select {
 		case <-c.Request.Context().Done():
@@ -161,6 +208,31 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesStream(c *gin.Context, flush
 			return
 		case chunk, ok := <-data:
 			if !ok {
+				// Prefer surfacing a terminal error if one is pending.
+				if terminalErr == nil {
+					select {
+					case errMsg, ok := <-errs:
+						if ok && errMsg != nil {
+							terminalErr = errMsg
+						}
+					default:
+					}
+				}
+				if terminalErr != nil {
+					status := http.StatusInternalServerError
+					if terminalErr.StatusCode > 0 {
+						status = terminalErr.StatusCode
+					}
+					errText := http.StatusText(status)
+					if terminalErr.Error != nil && terminalErr.Error.Error() != "" {
+						errText = terminalErr.Error.Error()
+					}
+					body := handlers.BuildErrorResponseBody(status, errText)
+					_, _ = fmt.Fprintf(c.Writer, "\nevent: error\ndata: %s\n\n", string(body))
+					flusher.Flush()
+					cancel(terminalErr.Error)
+					return
+				}
 				_, _ = c.Writer.Write([]byte("\n"))
 				flusher.Flush()
 				cancel(nil)
@@ -179,7 +251,17 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesStream(c *gin.Context, flush
 				continue
 			}
 			if errMsg != nil {
-				h.WriteErrorResponse(c, errMsg)
+				terminalErr = errMsg
+				status := http.StatusInternalServerError
+				if errMsg.StatusCode > 0 {
+					status = errMsg.StatusCode
+				}
+				errText := http.StatusText(status)
+				if errMsg.Error != nil && errMsg.Error.Error() != "" {
+					errText = errMsg.Error.Error()
+				}
+				body := handlers.BuildErrorResponseBody(status, errText)
+				_, _ = fmt.Fprintf(c.Writer, "\nevent: error\ndata: %s\n\n", string(body))
 				flusher.Flush()
 			}
 			var execErr error
@@ -188,7 +270,9 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesStream(c *gin.Context, flush
 			}
 			cancel(execErr)
 			return
-		case <-time.After(500 * time.Millisecond):
+		case <-keepAliveC:
+			_, _ = c.Writer.Write([]byte(": keep-alive\n\n"))
+			flusher.Flush()
 		}
 	}
 }

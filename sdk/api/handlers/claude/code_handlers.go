@@ -185,14 +185,6 @@ func (h *ClaudeCodeAPIHandler) handleNonStreamingResponse(c *gin.Context, rawJSO
 //   - c: The Gin context for the request.
 //   - rawJSON: The raw JSON request body.
 func (h *ClaudeCodeAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON []byte) {
-	// Set up Server-Sent Events (SSE) headers for streaming response
-	// These headers are essential for maintaining a persistent connection
-	// and enabling real-time streaming of chat completions
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Header("Access-Control-Allow-Origin", "*")
-
 	// Get the http.Flusher interface to manually flush the response.
 	// This is crucial for streaming as it allows immediate sending of data chunks
 	flusher, ok := c.Writer.(http.Flusher)
@@ -213,13 +205,62 @@ func (h *ClaudeCodeAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON [
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
 
 	dataChan, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "")
-	h.forwardClaudeStream(c, flusher, func(err error) { cliCancel(err) }, dataChan, errChan)
-	return
+
+	// Peek at the first chunk to determine success or failure before setting headers
+	select {
+	case <-c.Request.Context().Done():
+		cliCancel(c.Request.Context().Err())
+		return
+	case errMsg := <-errChan:
+		// Upstream failed immediately. Return proper error status and JSON.
+		h.WriteErrorResponse(c, errMsg)
+		if errMsg != nil {
+			cliCancel(errMsg.Error)
+		} else {
+			cliCancel(nil)
+		}
+		return
+	case chunk, ok := <-dataChan:
+		if !ok {
+			// Stream closed without data? Send DONE or just headers.
+			c.Header("Content-Type", "text/event-stream")
+			c.Header("Cache-Control", "no-cache")
+			c.Header("Connection", "keep-alive")
+			c.Header("Access-Control-Allow-Origin", "*")
+			flusher.Flush()
+			cliCancel(nil)
+			return
+		}
+
+		// Success! Set headers now.
+		c.Header("Content-Type", "text/event-stream")
+		c.Header("Cache-Control", "no-cache")
+		c.Header("Connection", "keep-alive")
+		c.Header("Access-Control-Allow-Origin", "*")
+
+		// Write the first chunk
+		if len(chunk) > 0 {
+			_, _ = c.Writer.Write(chunk)
+			flusher.Flush()
+		}
+
+		// Continue streaming the rest
+		h.forwardClaudeStream(c, flusher, func(err error) { cliCancel(err) }, dataChan, errChan)
+	}
 }
 
 func (h *ClaudeCodeAPIHandler) forwardClaudeStream(c *gin.Context, flusher http.Flusher, cancel func(error), data <-chan []byte, errs <-chan *interfaces.ErrorMessage) {
 	// OpenAI-style stream forwarding: write each SSE chunk and flush immediately.
 	// This guarantees clients see incremental output even for small responses.
+	keepAliveInterval := handlers.StreamingKeepAliveInterval(h.Cfg)
+	var keepAlive *time.Ticker
+	var keepAliveC <-chan time.Time
+	if keepAliveInterval > 0 {
+		keepAlive = time.NewTicker(keepAliveInterval)
+		defer keepAlive.Stop()
+		keepAliveC = keepAlive.C
+	}
+	var terminalErr *interfaces.ErrorMessage
 	for {
 		select {
 		case <-c.Request.Context().Done():
@@ -228,6 +269,29 @@ func (h *ClaudeCodeAPIHandler) forwardClaudeStream(c *gin.Context, flusher http.
 
 		case chunk, ok := <-data:
 			if !ok {
+				// Prefer surfacing a terminal error if one is pending.
+				if terminalErr == nil {
+					select {
+					case errMsg, ok := <-errs:
+						if ok && errMsg != nil {
+							terminalErr = errMsg
+						}
+					default:
+					}
+				}
+				if terminalErr != nil {
+					status := http.StatusInternalServerError
+					if terminalErr.StatusCode > 0 {
+						status = terminalErr.StatusCode
+					}
+					c.Status(status)
+
+					errorBytes, _ := json.Marshal(h.toClaudeError(terminalErr))
+					_, _ = fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", errorBytes)
+					flusher.Flush()
+					cancel(terminalErr.Error)
+					return
+				}
 				flusher.Flush()
 				cancel(nil)
 				return
@@ -242,6 +306,7 @@ func (h *ClaudeCodeAPIHandler) forwardClaudeStream(c *gin.Context, flusher http.
 				continue
 			}
 			if errMsg != nil {
+				terminalErr = errMsg
 				status := http.StatusInternalServerError
 				if errMsg.StatusCode > 0 {
 					status = errMsg.StatusCode
@@ -260,7 +325,9 @@ func (h *ClaudeCodeAPIHandler) forwardClaudeStream(c *gin.Context, flusher http.
 			}
 			cancel(execErr)
 			return
-		case <-time.After(500 * time.Millisecond):
+		case <-keepAliveC:
+			_, _ = fmt.Fprint(c.Writer, ": keep-alive\n\n")
+			flusher.Flush()
 		}
 	}
 }
