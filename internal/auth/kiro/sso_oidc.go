@@ -26,17 +26,17 @@ import (
 const (
 	// AWS SSO OIDC endpoints
 	ssoOIDCEndpoint = "https://oidc.us-east-1.amazonaws.com"
-	
+
 	// Kiro's start URL for Builder ID
 	builderIDStartURL = "https://view.awsapps.com/start"
-	
+
 	// Polling interval
 	pollInterval = 5 * time.Second
-	
+
 	// Authorization code flow callback
 	authCodeCallbackPath = "/oauth/callback"
 	authCodeCallbackPort = 19877
-	
+
 	// User-Agent to match official Kiro IDE
 	kiroUserAgent = "KiroIDE"
 )
@@ -61,10 +61,10 @@ func NewSSOOIDCClient(cfg *config.Config) *SSOOIDCClient {
 
 // RegisterClientResponse from AWS SSO OIDC.
 type RegisterClientResponse struct {
-	ClientID                string `json:"clientId"`
-	ClientSecret            string `json:"clientSecret"`
-	ClientIDIssuedAt        int64  `json:"clientIdIssuedAt"`
-	ClientSecretExpiresAt   int64  `json:"clientSecretExpiresAt"`
+	ClientID              string `json:"clientId"`
+	ClientSecret          string `json:"clientSecret"`
+	ClientIDIssuedAt      int64  `json:"clientIdIssuedAt"`
+	ClientSecretExpiresAt int64  `json:"clientSecretExpiresAt"`
 }
 
 // StartDeviceAuthResponse from AWS SSO OIDC.
