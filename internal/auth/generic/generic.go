@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -107,19 +108,11 @@ func CheckOAuth2Token(ctx context.Context, token string, cfg config.GenericAuth)
 		ctx,
 		client,
 		func() (*http.Request, error) {
-			var bodyReader *strings.Reader
+			var bodyReader io.Reader
 			if useRequestBody {
 				bodyReader = strings.NewReader(encodedForm)
-			} else {
-				bodyReader = strings.NewReader("")
 			}
-			var req *http.Request
-			var errReq error
-			if useRequestBody {
-				req, errReq = http.NewRequestWithContext(ctx, method, introspectionURL, bodyReader)
-			} else {
-				req, errReq = http.NewRequestWithContext(ctx, method, introspectionURL, nil)
-			}
+			req, errReq := http.NewRequestWithContext(ctx, method, introspectionURL, bodyReader)
 			if errReq != nil {
 				return nil, errReq
 			}
