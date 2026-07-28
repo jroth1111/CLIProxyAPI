@@ -69,6 +69,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.ErrorLogsMaxFiles != newCfg.ErrorLogsMaxFiles {
 		changes = append(changes, fmt.Sprintf("error-logs-max-files: %d -> %d", oldCfg.ErrorLogsMaxFiles, newCfg.ErrorLogsMaxFiles))
 	}
+	if oldCfg.MetadataLogsMaxFiles != newCfg.MetadataLogsMaxFiles {
+		changes = append(changes, fmt.Sprintf("metadata-logs-max-files: %d -> %d", oldCfg.MetadataLogsMaxFiles, newCfg.MetadataLogsMaxFiles))
+	}
 	if oldCfg.RequestRetry != newCfg.RequestRetry {
 		changes = append(changes, fmt.Sprintf("request-retry: %d -> %d", oldCfg.RequestRetry, newCfg.RequestRetry))
 	}

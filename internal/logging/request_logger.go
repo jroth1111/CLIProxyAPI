@@ -6,6 +6,7 @@ package logging
 import (
 	"fmt"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
@@ -140,10 +141,18 @@ type FileRequestLogger struct {
 	// logsDir is the directory where log files are stored.
 	logsDir string
 
-	// errorLogsMaxFiles limits the number of error log files retained.
+	// errorLogsMaxFiles limits the number of detailed error log files retained.
 	errorLogsMaxFiles int
 
+	// metadataLogsMaxFiles limits payload-free metadata logs without touching historical detail logs.
+	metadataLogsMaxFiles int
+
 	homeEnabled bool
+
+	// metadataOnly prevents request payloads, headers, credentials, and raw errors from
+	// reaching local or forwarded request logs. It is enabled whenever application
+	// file logging is disabled.
+	metadataOnly atomic.Bool
 }
 
 // NewFileRequestLogger creates a new file-based request logger.
@@ -166,10 +175,11 @@ func NewFileRequestLogger(enabled bool, logsDir string, configDir string, errorL
 		}
 	}
 	return &FileRequestLogger{
-		enabled:           enabled,
-		logsDir:           logsDir,
-		errorLogsMaxFiles: errorLogsMaxFiles,
-		homeEnabled:       false,
+		enabled:              enabled,
+		logsDir:              logsDir,
+		errorLogsMaxFiles:    errorLogsMaxFiles,
+		metadataLogsMaxFiles: 100,
+		homeEnabled:          false,
 	}
 }
 
@@ -190,15 +200,39 @@ func (l *FileRequestLogger) SetEnabled(enabled bool) {
 	l.enabled = enabled
 }
 
+// SetMetadataOnly enables the payload-free request log format.
+func (l *FileRequestLogger) SetMetadataOnly(enabled bool) {
+	if l == nil {
+		return
+	}
+	l.metadataOnly.Store(enabled)
+}
+
+// IsMetadataOnly reports whether request logs are restricted to safe metadata.
+func (l *FileRequestLogger) IsMetadataOnly() bool {
+	return l != nil && l.metadataOnly.Load()
+}
+
 // SetErrorLogsMaxFiles updates the maximum number of error log files to retain.
 func (l *FileRequestLogger) SetErrorLogsMaxFiles(maxFiles int) {
 	l.errorLogsMaxFiles = maxFiles
+}
+
+// SetMetadataLogsMaxFiles updates the bounded payload-free metadata retention limit.
+func (l *FileRequestLogger) SetMetadataLogsMaxFiles(maxFiles int) {
+	if maxFiles < 1 {
+		maxFiles = 100
+	}
+	l.metadataLogsMaxFiles = maxFiles
 }
 
 // NewFileBodySource creates a temp-backed source under the request log directory.
 func (l *FileRequestLogger) NewFileBodySource(prefix string) (*FileBodySource, error) {
 	if l == nil {
 		return nil, fmt.Errorf("file request logger is nil")
+	}
+	if l.IsMetadataOnly() {
+		return nil, fmt.Errorf("payload-backed request log sources are disabled in metadata-only mode")
 	}
 	if errEnsure := l.ensureLogsDir(); errEnsure != nil {
 		return nil, errEnsure

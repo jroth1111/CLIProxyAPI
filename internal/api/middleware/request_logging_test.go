@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -193,7 +194,7 @@ func TestDeferredRequestBodyCaptureDoesNotDrainUnreadBody(t *testing.T) {
 	}
 }
 
-func TestRequestLoggingMiddlewareCapturesLargeErrorRequestAndDeferredAPIRequest(t *testing.T) {
+func TestRequestLoggingMiddlewareForcedErrorOmitsLargeAndDeferredPayloads(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	logsDir := t.TempDir()
@@ -215,7 +216,7 @@ func TestRequestLoggingMiddlewareCapturesLargeErrorRequestAndDeferredAPIRequest(
 			return
 		}
 		executorCtx := context.WithValue(context.Background(), "gin", c)
-		helps.RecordAPIRequest(executorCtx, &config.Config{}, helps.UpstreamRequestLog{
+		helps.RecordAPIRequest(executorCtx, &config.Config{LoggingToFile: true}, helps.UpstreamRequestLog{
 			URL:     "https://api.example.com/v1/responses",
 			Method:  http.MethodPost,
 			Headers: http.Header{"Content-Type": []string{"application/json"}},
@@ -236,29 +237,107 @@ func TestRequestLoggingMiddlewareCapturesLargeErrorRequestAndDeferredAPIRequest(
 	if errReadDir != nil {
 		t.Fatalf("read logs dir: %v", errReadDir)
 	}
-	var logPath string
-	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), "error-") && strings.HasSuffix(entry.Name(), ".log") {
-			logPath = logsDir + string(os.PathSeparator) + entry.Name()
-			break
-		}
+	if len(entries) != 1 || !strings.HasPrefix(entries[0].Name(), "metadata-error-") {
+		t.Fatalf("forced metadata entries = %#v", entries)
 	}
-	if logPath == "" {
-		t.Fatal("forced error log was not created")
-	}
-	content, errReadLog := os.ReadFile(logPath)
+	content, errReadLog := os.ReadFile(filepath.Join(logsDir, entries[0].Name()))
 	if errReadLog != nil {
 		t.Fatalf("read error log: %v", errReadLog)
 	}
-	if !bytes.Contains(content, payload) {
-		t.Fatal("error log does not contain the complete large request body")
+	for _, forbidden := range [][]byte{payload, upstreamBody, []byte("large-error-body"), []byte("upstream rejected request")} {
+		if bytes.Contains(content, forbidden) {
+			t.Fatalf("forced metadata log contains payload %q: %s", forbidden, content)
+		}
 	}
-	if !bytes.Contains(content, []byte("=== API REQUEST 1 ===")) {
-		t.Fatal("error log does not contain the deferred API request section")
+	for _, required := range []string{"Status: 400", "Error Class: client_error", "Response Body Bytes:"} {
+		if !bytes.Contains(content, []byte(required)) {
+			t.Fatalf("forced metadata log missing %q: %s", required, content)
+		}
 	}
-	if !bytes.Contains(content, upstreamBody) {
-		t.Fatal("error log does not contain the deferred upstream request body")
+}
+
+func TestRequestLoggingMiddlewareMetadataOnlySkipsBufferedDeferredCompressedAndStreamingPayloads(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	t.Run("compressed streaming request log", func(t *testing.T) {
+		logsDir := filepath.Join(t.TempDir(), "logs")
+		logger := logging.NewFileRequestLogger(true, logsDir, "", 10)
+		logger.SetMetadataOnly(true)
+		sentinel := "SENTINEL_STREAMING_SECRET_91c2"
+		raw := []byte(`{"model":"safe-stream-model","system":"` + sentinel + `","messages":[{"content":"` + sentinel + `"}]}`)
+		encoder, errEncoder := zstd.NewWriter(nil)
+		if errEncoder != nil {
+			t.Fatalf("NewWriter: %v", errEncoder)
+		}
+		compressed := encoder.EncodeAll(raw, nil)
+		encoder.Close()
+
+		router := gin.New()
+		router.Use(RequestLoggingMiddleware(logger))
+		router.POST("/v1/responses", func(c *gin.Context) {
+			body, errRead := io.ReadAll(c.Request.Body)
+			if errRead != nil || !bytes.Equal(body, compressed) {
+				c.Status(http.StatusInternalServerError)
+				return
+			}
+			c.Header("Content-Type", "text/event-stream")
+			c.Status(http.StatusOK)
+			_, _ = c.Writer.WriteString("data: " + sentinel + "\n\n")
+		})
+		request := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(compressed))
+		request.Header.Set("Content-Encoding", "zstd")
+		request.Header.Set("Authorization", "Bearer "+sentinel)
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		content := assertMetadataLogExcludesSentinel(t, logsDir, sentinel)
+		for _, required := range []string{"Model: safe-stream-model", "Status: 200", "Response Body Bytes:"} {
+			if !bytes.Contains(content, []byte(required)) {
+				t.Fatalf("metadata log missing %q: %s", required, content)
+			}
+		}
+	})
+
+	t.Run("large deferred forced error", func(t *testing.T) {
+		logsDir := filepath.Join(t.TempDir(), "logs")
+		logger := logging.NewFileRequestLogger(false, logsDir, "", 10)
+		logger.SetMetadataOnly(true)
+		sentinel := "SENTINEL_DEFERRED_SECRET_48ad"
+		payload := bytes.Repeat([]byte(sentinel), int(maxErrorOnlyCapturedRequestBodyBytes)/len(sentinel)+2)
+
+		router := gin.New()
+		router.Use(RequestLoggingMiddleware(logger))
+		router.POST("/v1/responses", func(c *gin.Context) {
+			_, _ = io.Copy(io.Discard, c.Request.Body)
+			c.JSON(http.StatusBadRequest, gin.H{"error": sentinel})
+		})
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(payload)))
+		assertMetadataLogExcludesSentinel(t, logsDir, sentinel)
+	})
+}
+
+func assertMetadataLogExcludesSentinel(t *testing.T, logsDir, sentinel string) []byte {
+	t.Helper()
+	entries, errReadDir := os.ReadDir(logsDir)
+	if errReadDir != nil {
+		t.Fatalf("ReadDir: %v", errReadDir)
 	}
+	if len(entries) != 1 || !strings.HasPrefix(entries[0].Name(), "metadata-") {
+		t.Fatalf("metadata entries = %#v", entries)
+	}
+	content, errRead := os.ReadFile(filepath.Join(logsDir, entries[0].Name()))
+	if errRead != nil {
+		t.Fatalf("ReadFile: %v", errRead)
+	}
+	if bytes.Contains(content, []byte(sentinel)) {
+		t.Fatalf("metadata log contains sentinel: %s", content)
+	}
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".tmp") || entry.IsDir() {
+			t.Fatalf("metadata mode left payload temp artifact %q", entry.Name())
+		}
+	}
+	return content
 }
 
 func TestAttachRequestLogSourcesUsesLoggerLogsDir(t *testing.T) {

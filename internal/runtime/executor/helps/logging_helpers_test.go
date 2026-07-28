@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -12,31 +11,22 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 )
 
-func TestRecordAPIRequestClonesDeferredBodyWhenRequestLogDisabled(t *testing.T) {
+func TestRecordAPIRequestDoesNotCaptureBodyWhenRequestLogDisabled(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	ginCtx, _ := gin.CreateTestContext(recorder)
 	ctx := context.WithValue(context.Background(), "gin", ginCtx)
 	body := []byte(`{"model":"original"}`)
 
-	RecordAPIRequest(ctx, &config.Config{}, UpstreamRequestLog{
+	RecordAPIRequest(ctx, &config.Config{LoggingToFile: true}, UpstreamRequestLog{
 		URL:    "https://api.example.com/v1/responses",
 		Method: http.MethodPost,
 		Body:   body,
 	})
 	body[10] = 'X'
 
-	value, exists := ginCtx.Get(logging.DeferredAPIRequestContextKey)
-	if !exists {
-		t.Fatal("deferred API request was not captured")
-	}
-	requests, ok := value.([]logging.DeferredAPIRequest)
-	if !ok || len(requests) != 1 {
-		t.Fatalf("deferred API requests = %#v, want one request", value)
-	}
-	captured := string(requests[0]())
-	if !strings.Contains(captured, `{"model":"original"}`) {
-		t.Fatalf("captured API request = %q, want original body", captured)
+	if value, exists := ginCtx.Get(logging.DeferredAPIRequestContextKey); exists {
+		t.Fatalf("deferred API request captured while request logging disabled: %#v", value)
 	}
 }
 

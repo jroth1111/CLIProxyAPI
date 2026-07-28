@@ -219,7 +219,7 @@ func (w *FileStreamingLogWriter) Close() error {
 		return nil
 	}
 
-	logFile, errOpen := os.OpenFile(w.logFilePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	logFile, errOpen := os.OpenFile(w.logFilePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if errOpen != nil {
 		w.cleanupTempFiles()
 		return fmt.Errorf("failed to create log file: %w", errOpen)

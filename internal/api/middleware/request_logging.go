@@ -47,7 +47,11 @@ func RequestLoggingMiddleware(logger logging.RequestLogger) gin.HandlerFunc {
 		}
 
 		loggerEnabled := logger.IsEnabled()
-		captureBody := shouldCaptureRequestBody(loggerEnabled, c.Request)
+		metadataOnly := requestLoggerMetadataOnly(logger) || !loggerEnabled
+		captureBody := shouldCaptureRequestBody(loggerEnabled && !metadataOnly, c.Request)
+		if metadataOnly {
+			captureBody = shouldCaptureMetadataRequestBody(c.Request)
+		}
 
 		// Capture request information
 		requestInfo, err := captureRequestInfo(c, captureBody)
@@ -64,8 +68,10 @@ func RequestLoggingMiddleware(logger logging.RequestLogger) gin.HandlerFunc {
 			wrapper.logOnErrorOnly = true
 		}
 		c.Writer = wrapper
-		attachRequestLogSources(c, logger, loggerEnabled)
-		attachDeferredRequestBodyCapture(c.Request, logger, requestInfo, loggerEnabled, captureBody)
+		attachRequestLogSources(c, logger, loggerEnabled && !metadataOnly)
+		if !metadataOnly {
+			attachDeferredRequestBodyCapture(c.Request, logger, requestInfo, loggerEnabled, captureBody)
+		}
 
 		// Process the request
 		c.Next()
@@ -80,6 +86,15 @@ func RequestLoggingMiddleware(logger logging.RequestLogger) gin.HandlerFunc {
 
 type fileBodySourceFactory interface {
 	NewFileBodySource(prefix string) (*logging.FileBodySource, error)
+}
+
+type metadataOnlyRequestLogger interface {
+	IsMetadataOnly() bool
+}
+
+func requestLoggerMetadataOnly(logger logging.RequestLogger) bool {
+	metadataLogger, ok := logger.(metadataOnlyRequestLogger)
+	return ok && metadataLogger.IsMetadataOnly()
 }
 
 type deferredRequestBodyCapture struct {
@@ -292,6 +307,10 @@ func shouldCaptureRequestBody(loggerEnabled bool, req *http.Request) bool {
 	if loggerEnabled {
 		return true
 	}
+	return shouldCaptureMetadataRequestBody(req)
+}
+
+func shouldCaptureMetadataRequestBody(req *http.Request) bool {
 	if req == nil || req.Body == nil {
 		return false
 	}

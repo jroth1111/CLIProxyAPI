@@ -58,6 +58,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.LoggingToFile = false
 	cfg.LogsMaxTotalSizeMB = 0
 	cfg.ErrorLogsMaxFiles = 10
+	cfg.MetadataLogsMaxFiles = 100
 	cfg.UsageStatisticsEnabled = false
 	cfg.RedisUsageQueueRetentionSeconds = 60
 	cfg.DisableCooling = false
@@ -117,6 +118,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	if cfg.ErrorLogsMaxFiles < 0 {
 		cfg.ErrorLogsMaxFiles = 10
+	}
+	if cfg.MetadataLogsMaxFiles < 1 {
+		cfg.MetadataLogsMaxFiles = 100
 	}
 
 	if cfg.RedisUsageQueueRetentionSeconds <= 0 {

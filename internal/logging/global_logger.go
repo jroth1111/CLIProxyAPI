@@ -193,13 +193,26 @@ func ConfigureLogOutput(cfg *config.Config) error {
 
 	protectedPath := ""
 	if cfg.LoggingToFile {
-		if err := os.MkdirAll(logDir, 0o755); err != nil {
+		if err := os.MkdirAll(logDir, 0o700); err != nil {
 			return fmt.Errorf("logging: failed to create log directory: %w", err)
+		}
+		if err := os.Chmod(logDir, 0o700); err != nil {
+			return fmt.Errorf("logging: failed to secure log directory: %w", err)
 		}
 		if logWriter != nil {
 			_ = logWriter.Close()
 		}
 		protectedPath = filepath.Join(logDir, "main.log")
+		mainFile, errOpen := os.OpenFile(protectedPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if errOpen != nil {
+			return fmt.Errorf("logging: failed to create main log: %w", errOpen)
+		}
+		if errClose := mainFile.Close(); errClose != nil {
+			return fmt.Errorf("logging: failed to close main log: %w", errClose)
+		}
+		if errChmod := os.Chmod(protectedPath, 0o600); errChmod != nil {
+			return fmt.Errorf("logging: failed to secure main log: %w", errChmod)
+		}
 		logWriter = &lumberjack.Logger{
 			Filename:   protectedPath,
 			MaxSize:    10,

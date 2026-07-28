@@ -76,6 +76,9 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 	}
 
 	if oldCfg == nil || oldCfg.LoggingToFile != cfg.LoggingToFile || oldCfg.LogsMaxTotalSizeMB != cfg.LogsMaxTotalSizeMB {
+		if setter, ok := s.requestLogger.(interface{ SetMetadataOnly(bool) }); ok {
+			setter.SetMetadataOnly(!cfg.LoggingToFile)
+		}
 		if err := logging.ConfigureLogOutput(cfg); err != nil {
 			log.Errorf("failed to reconfigure log output: %v", err)
 		}
@@ -95,6 +98,11 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 	if s.requestLogger != nil && (oldCfg == nil || oldCfg.ErrorLogsMaxFiles != cfg.ErrorLogsMaxFiles) {
 		if setter, ok := s.requestLogger.(interface{ SetErrorLogsMaxFiles(int) }); ok {
 			setter.SetErrorLogsMaxFiles(cfg.ErrorLogsMaxFiles)
+		}
+	}
+	if s.requestLogger != nil && (oldCfg == nil || oldCfg.MetadataLogsMaxFiles != cfg.MetadataLogsMaxFiles) {
+		if setter, ok := s.requestLogger.(interface{ SetMetadataLogsMaxFiles(int) }); ok {
+			setter.SetMetadataLogsMaxFiles(cfg.MetadataLogsMaxFiles)
 		}
 	}
 

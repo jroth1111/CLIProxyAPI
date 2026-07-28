@@ -18,6 +18,7 @@ import (
 const requestBodyOverrideContextKey = "REQUEST_BODY_OVERRIDE"
 const responseBodyOverrideContextKey = "RESPONSE_BODY_OVERRIDE"
 const websocketTimelineOverrideContextKey = "WEBSOCKET_TIMELINE_OVERRIDE"
+const maxMetadataResponseBodyBytes = 1 << 20
 
 // RequestInfo holds essential details of an incoming HTTP request for logging purposes.
 type RequestInfo struct {
@@ -95,13 +96,16 @@ func (w *ResponseWriterWrapper) Write(data []byte) (int, error) {
 	}
 
 	if w.shouldBufferResponseBody() {
-		w.body.Write(data)
+		w.appendResponseBody(data)
 	}
 
 	return n, err
 }
 
 func (w *ResponseWriterWrapper) shouldBufferResponseBody() bool {
+	if w.isMetadataOnly() {
+		return w.body != nil && w.body.Len() < maxMetadataResponseBodyBytes
+	}
 	if w.logger != nil && w.logger.IsEnabled() {
 		return true
 	}
@@ -117,6 +121,28 @@ func (w *ResponseWriterWrapper) shouldBufferResponseBody() bool {
 		}
 	}
 	return status >= http.StatusBadRequest
+}
+
+func (w *ResponseWriterWrapper) isMetadataOnly() bool {
+	return w.logger != nil && (requestLoggerMetadataOnly(w.logger) || (w.logOnErrorOnly && !w.logger.IsEnabled()))
+}
+
+func (w *ResponseWriterWrapper) appendResponseBody(data []byte) {
+	if w.body == nil || len(data) == 0 {
+		return
+	}
+	if !w.isMetadataOnly() {
+		_, _ = w.body.Write(data)
+		return
+	}
+	remaining := maxMetadataResponseBodyBytes - w.body.Len()
+	if remaining <= 0 {
+		return
+	}
+	if len(data) > remaining {
+		data = data[:remaining]
+	}
+	_, _ = w.body.Write(data)
 }
 
 // WriteString wraps the underlying ResponseWriter's WriteString method to capture response data.
@@ -142,7 +168,7 @@ func (w *ResponseWriterWrapper) WriteString(data string) (int, error) {
 	}
 
 	if w.shouldBufferResponseBody() {
-		w.body.WriteString(data)
+		w.appendResponseBody([]byte(data))
 	}
 	return n, err
 }
@@ -161,7 +187,7 @@ func (w *ResponseWriterWrapper) WriteHeader(statusCode int) {
 	w.isStreaming = w.detectStreaming(contentType)
 
 	// If streaming, initialize streaming log writer
-	if w.isStreaming && w.logger.IsEnabled() {
+	if w.isStreaming && w.logger.IsEnabled() && !requestLoggerMetadataOnly(w.logger) {
 		streamWriter, err := w.logger.LogStreamingRequest(
 			w.requestInfo.URL,
 			w.requestInfo.Method,

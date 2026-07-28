@@ -26,12 +26,19 @@ func NewFileBodySourceInDir(baseDir string, prefix string) (*FileBodySource, err
 	if baseDir == "" {
 		return nil, fmt.Errorf("base directory is required")
 	}
-	if errMkdir := os.MkdirAll(baseDir, 0755); errMkdir != nil {
+	if errMkdir := os.MkdirAll(baseDir, 0o700); errMkdir != nil {
 		return nil, errMkdir
+	}
+	if errChmod := os.Chmod(baseDir, 0o700); errChmod != nil {
+		return nil, errChmod
 	}
 	dir, errCreate := os.MkdirTemp(baseDir, "request-log-parts-"+prefix+"-*")
 	if errCreate != nil {
 		return nil, errCreate
+	}
+	if errChmod := os.Chmod(dir, 0o700); errChmod != nil {
+		_ = os.RemoveAll(dir)
+		return nil, errChmod
 	}
 	return &FileBodySource{dir: dir}, nil
 }
@@ -74,12 +81,17 @@ func (s *FileBodySource) CreatePart(prefix string) (*os.File, error) {
 		return nil, fmt.Errorf("file body source has been cleaned")
 	}
 	prefix = sanitizeTempPrefix(prefix)
-	if errMkdir := os.MkdirAll(s.dir, 0755); errMkdir != nil {
+	if errMkdir := os.MkdirAll(s.dir, 0o700); errMkdir != nil {
 		return nil, errMkdir
 	}
 	file, errCreate := os.CreateTemp(s.dir, prefix+"-*.tmp")
 	if errCreate != nil {
 		return nil, errCreate
+	}
+	if errChmod := file.Chmod(0o600); errChmod != nil {
+		_ = file.Close()
+		_ = os.Remove(file.Name())
+		return nil, errChmod
 	}
 	s.paths = append(s.paths, file.Name())
 	return file, nil
@@ -117,7 +129,7 @@ func (s *FileBodySource) AppendBytes(data []byte) error {
 	if s.cleaned {
 		return fmt.Errorf("file body source has been cleaned")
 	}
-	if errMkdir := os.MkdirAll(s.dir, 0755); errMkdir != nil {
+	if errMkdir := os.MkdirAll(s.dir, 0o700); errMkdir != nil {
 		return errMkdir
 	}
 
@@ -129,7 +141,7 @@ func (s *FileBodySource) AppendBytes(data []byte) error {
 			s.paths = append(s.paths, file.Name())
 		}
 	} else {
-		file, errOpen = os.OpenFile(s.paths[len(s.paths)-1], os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		file, errOpen = os.OpenFile(s.paths[len(s.paths)-1], os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	}
 	if errOpen != nil {
 		return errOpen

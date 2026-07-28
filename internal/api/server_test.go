@@ -879,6 +879,7 @@ func TestCodexAlphaSearchUsesRequestIDForSessionAffinity(t *testing.T) {
 func TestCodexAlphaSearchRecordsRequestLog(t *testing.T) {
 	server := newTestServer(t)
 	server.cfg.RequestLog = true
+	server.cfg.LoggingToFile = true
 
 	executor := &codexSearchCaptureExecutor{}
 	server.handlers.AuthManager.RegisterExecutor(executor)
@@ -1708,7 +1709,7 @@ func TestDefaultRequestLoggerFactory_UsesResolvedLogDirectory(t *testing.T) {
 	}
 	foundErrorLogInAuthDir := false
 	for _, entry := range authEntries {
-		if strings.HasPrefix(entry.Name(), "error-") && strings.HasSuffix(entry.Name(), ".log") {
+		if strings.HasPrefix(entry.Name(), "metadata-error-") && strings.HasSuffix(entry.Name(), ".log") {
 			foundErrorLogInAuthDir = true
 			break
 		}

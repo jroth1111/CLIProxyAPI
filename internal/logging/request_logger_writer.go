@@ -68,6 +68,27 @@ func (l *FileRequestLogger) logRequestWithSources(url, method string, requestHea
 		return nil
 	}
 
+	if l.IsMetadataOnly() || (force && !l.enabled) {
+		content := formatMetadataLog(url, method, body, statusCode, response, websocketTimeline, apiRequest, apiResponse, apiWebsocketTimeline, apiResponseErrors, requestID, requestTimestamp, apiResponseTimestamp)
+		if l.homeEnabled && l.enabled {
+			return l.forwardRequestLogToHome(context.Background(), nil, safeMetadataValue(requestID), content)
+		}
+		if errEnsure := l.ensureLogsDir(); errEnsure != nil {
+			return fmt.Errorf("failed to create logs directory: %w", errEnsure)
+		}
+		filePath := filepath.Join(l.logsDir, l.generateMetadataFilename(force && !l.enabled, requestID))
+		if errWrite := os.WriteFile(filePath, []byte(content), 0o600); errWrite != nil {
+			return fmt.Errorf("failed to write metadata log file: %w", errWrite)
+		}
+		if errChmod := os.Chmod(filePath, 0o600); errChmod != nil {
+			return fmt.Errorf("failed to secure metadata log file: %w", errChmod)
+		}
+		if errCleanup := l.cleanupOldMetadataLogs(); errCleanup != nil {
+			log.WithError(errCleanup).Warn("failed to clean up old metadata logs")
+		}
+		return nil
+	}
+
 	if l.homeEnabled && l.enabled {
 		responseToWrite, decompressErr := l.decompressResponse(responseHeaders, response)
 		if decompressErr != nil {
@@ -134,7 +155,7 @@ func (l *FileRequestLogger) logRequestWithSources(url, method string, requestHea
 		responseToWrite = response
 	}
 
-	logFile, errOpen := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	logFile, errOpen := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if errOpen != nil {
 		return fmt.Errorf("failed to create log file: %w", errOpen)
 	}
@@ -260,15 +281,27 @@ func (l *FileRequestLogger) generateErrorFilename(url string, requestID ...strin
 	return fmt.Sprintf("error-%s", l.generateFilename(url, requestID...))
 }
 
+func (l *FileRequestLogger) generateMetadataFilename(force bool, requestID string) string {
+	prefix := "metadata-request"
+	if force {
+		prefix = "metadata-error"
+	}
+	idPart := safeMetadataValue(requestID)
+	if idPart == "" {
+		idPart = fmt.Sprintf("%d", requestLogID.Add(1))
+	}
+	return fmt.Sprintf("%s-%s-%s.log", prefix, time.Now().Format("2006-01-02T150405.000000000"), idPart)
+}
+
 // ensureLogsDir creates the logs directory if it doesn't exist.
 //
 // Returns:
 //   - error: An error if directory creation fails, nil otherwise
 func (l *FileRequestLogger) ensureLogsDir() error {
-	if _, err := os.Stat(l.logsDir); os.IsNotExist(err) {
-		return os.MkdirAll(l.logsDir, 0755)
+	if err := os.MkdirAll(l.logsDir, 0o700); err != nil {
+		return err
 	}
-	return nil
+	return os.Chmod(l.logsDir, 0o700)
 }
 
 // generateFilename creates a sanitized filename from the URL path and current timestamp.
@@ -344,6 +377,49 @@ func (l *FileRequestLogger) sanitizeForFilename(path string) string {
 }
 
 // cleanupOldErrorLogs keeps only the newest errorLogsMaxFiles forced error log files.
+func (l *FileRequestLogger) cleanupOldMetadataLogs() error {
+	maxFiles := l.metadataLogsMaxFiles
+	if maxFiles < 1 {
+		maxFiles = 100
+	}
+	return l.cleanupOldLogsByPrefix("metadata-", maxFiles)
+}
+
+func (l *FileRequestLogger) cleanupOldLogsByPrefix(prefix string, maxFiles int) error {
+	if maxFiles <= 0 {
+		return nil
+	}
+	entries, errRead := os.ReadDir(l.logsDir)
+	if errRead != nil {
+		return errRead
+	}
+	type logFile struct {
+		name    string
+		modTime time.Time
+	}
+	var files []logFile
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), prefix) || !strings.HasSuffix(entry.Name(), ".log") {
+			continue
+		}
+		info, errInfo := entry.Info()
+		if errInfo != nil {
+			continue
+		}
+		files = append(files, logFile{name: entry.Name(), modTime: info.ModTime()})
+	}
+	if len(files) <= maxFiles {
+		return nil
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].modTime.After(files[j].modTime) })
+	for _, file := range files[maxFiles:] {
+		if errRemove := os.Remove(filepath.Join(l.logsDir, file.name)); errRemove != nil {
+			return errRemove
+		}
+	}
+	return nil
+}
+
 func (l *FileRequestLogger) cleanupOldErrorLogs() error {
 	if l.errorLogsMaxFiles <= 0 {
 		return nil

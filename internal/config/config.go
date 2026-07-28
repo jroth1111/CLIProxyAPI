@@ -50,9 +50,13 @@ type Config struct {
 	// When exceeded, the oldest log files are deleted until within the limit. Set to 0 to disable.
 	LogsMaxTotalSizeMB int `yaml:"logs-max-total-size-mb" json:"logs-max-total-size-mb"`
 
-	// ErrorLogsMaxFiles limits the number of error log files retained when request logging is disabled.
+	// ErrorLogsMaxFiles limits the number of detailed error log files retained when request logging is disabled.
 	// When exceeded, the oldest error log files are deleted. Default is 10. Set to 0 to disable cleanup.
 	ErrorLogsMaxFiles int `yaml:"error-logs-max-files" json:"error-logs-max-files"`
+
+	// MetadataLogsMaxFiles limits the number of payload-free metadata request/error logs retained.
+	// Default is 100. Values less than 1 are normalized to the default so metadata retention stays bounded.
+	MetadataLogsMaxFiles int `yaml:"metadata-logs-max-files" json:"metadata-logs-max-files"`
 
 	// UsageStatisticsEnabled toggles in-memory usage aggregation; when false, usage data is discarded.
 	UsageStatisticsEnabled bool `yaml:"usage-statistics-enabled" json:"usage-statistics-enabled"`

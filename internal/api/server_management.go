@@ -56,6 +56,10 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/error-logs-max-files", s.mgmt.PutErrorLogsMaxFiles)
 		mgmt.PATCH("/error-logs-max-files", s.mgmt.PutErrorLogsMaxFiles)
 
+		mgmt.GET("/metadata-logs-max-files", s.mgmt.GetMetadataLogsMaxFiles)
+		mgmt.PUT("/metadata-logs-max-files", s.mgmt.PutMetadataLogsMaxFiles)
+		mgmt.PATCH("/metadata-logs-max-files", s.mgmt.PutMetadataLogsMaxFiles)
+
 		mgmt.GET("/usage-statistics-enabled", s.mgmt.GetUsageStatisticsEnabled)
 		mgmt.PUT("/usage-statistics-enabled", s.mgmt.PutUsageStatisticsEnabled)
 		mgmt.PATCH("/usage-statistics-enabled", s.mgmt.PutUsageStatisticsEnabled)
