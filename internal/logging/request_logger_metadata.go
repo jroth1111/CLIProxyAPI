@@ -18,7 +18,7 @@ const (
 
 var safeMetadataIdentifier = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]*$`)
 
-func formatMetadataLog(url, method string, requestBody []byte, statusCode int, response, websocketTimeline, apiRequest, apiResponse, apiWebsocketTimeline []byte, apiResponseErrors []*interfaces.ErrorMessage, requestID string, requestTimestamp, apiResponseTimestamp time.Time) string {
+func formatMetadataLog(_ string, method string, requestBody []byte, statusCode int, response, websocketTimeline, apiRequest, apiResponse, apiWebsocketTimeline []byte, apiResponseErrors []*interfaces.ErrorMessage, requestID string, requestTimestamp, apiResponseTimestamp time.Time) string {
 	completedAt := time.Now()
 	if requestTimestamp.IsZero() {
 		requestTimestamp = completedAt
@@ -27,11 +27,7 @@ func formatMetadataLog(url, method string, requestBody []byte, statusCode int, r
 	var content strings.Builder
 	content.WriteString("=== REQUEST METADATA ===\n")
 	writeMetadataIdentifier(&content, "Request ID", requestID)
-	if model := metadataModel(requestBody); model != "" {
-		writeMetadataField(&content, "Model", model)
-	}
 	writeMetadataField(&content, "Method", safeMetadataMethod(method))
-	writeMetadataField(&content, "Route", safeMetadataRoute(url))
 	writeMetadataField(&content, "Status", fmt.Sprintf("%d", statusCode))
 	writeMetadataField(&content, "Error Class", metadataErrorClass(statusCode, apiResponseErrors))
 	writeMetadataField(&content, "Started At", requestTimestamp.Format(time.RFC3339Nano))
@@ -90,29 +86,6 @@ func safeMetadataMethod(method string) string {
 	default:
 		return ""
 	}
-}
-
-func safeMetadataRoute(rawURL string) string {
-	route := rawURL
-	if queryIndex := strings.IndexByte(route, '?'); queryIndex >= 0 {
-		route = route[:queryIndex]
-	}
-	if len(route) == 0 || len(route) > maxMetadataIdentifierLength || route[0] != '/' {
-		return ""
-	}
-	for _, r := range route {
-		if r < 0x21 || r > 0x7e || r == '\\' {
-			return ""
-		}
-	}
-	return route
-}
-
-func metadataModel(payload []byte) string {
-	if len(payload) == 0 || len(payload) > maxMetadataDiagnosticBytes || !gjson.ValidBytes(payload) {
-		return ""
-	}
-	return safeMetadataValue(gjson.GetBytes(payload, "model").String())
 }
 
 func metadataErrorClass(statusCode int, errors []*interfaces.ErrorMessage) string {

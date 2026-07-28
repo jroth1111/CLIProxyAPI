@@ -162,7 +162,7 @@ func TestKimiExecutorClaudeStreamForwardsAnthropicBetaAndLogsUpstream(t *testing
 		}, nil
 	}))
 
-	cfg := &config.Config{LoggingToFile: true, SDKConfig: config.SDKConfig{RequestLog: true}}
+	cfg := &config.Config{SDKConfig: config.SDKConfig{RequestLog: true}}
 	executor := NewKimiExecutor(cfg)
 	auth := &cliproxyauth.Auth{
 		ID:         "kimi-test-auth",

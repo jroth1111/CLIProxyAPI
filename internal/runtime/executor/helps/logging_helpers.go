@@ -57,7 +57,7 @@ type upstreamAttempt struct {
 }
 
 func requestLogCaptureEnabled(cfg *config.Config) bool {
-	return cfg != nil && cfg.RequestLog && cfg.LoggingToFile && !cfg.CommercialMode
+	return cfg != nil && cfg.RequestLog && !cfg.CommercialMode
 }
 
 // RecordAPIRequest stores the upstream request metadata in Gin context for request logging.

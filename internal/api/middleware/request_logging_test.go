@@ -290,7 +290,7 @@ func TestRequestLoggingMiddlewareMetadataOnlySkipsBufferedDeferredCompressedAndS
 		response := httptest.NewRecorder()
 		router.ServeHTTP(response, request)
 		content := assertMetadataLogExcludesSentinel(t, logsDir, sentinel)
-		for _, required := range []string{"Model: safe-stream-model", "Status: 200", "Response Body Bytes:"} {
+		for _, required := range []string{"Method: POST", "Status: 200", "Response Body Bytes:"} {
 			if !bytes.Contains(content, []byte(required)) {
 				t.Fatalf("metadata log missing %q: %s", required, content)
 			}
@@ -443,7 +443,7 @@ func TestCaptureRequestInfoDecodesZstdRequestBodyForLog(t *testing.T) {
 	req.Header.Set("Content-Encoding", "zstd")
 	c.Request = req
 
-	info, errCapture := captureRequestInfo(c, true)
+	info, errCapture := captureRequestInfo(c, true, false)
 	if errCapture != nil {
 		t.Fatalf("captureRequestInfo: %v", errCapture)
 	}
@@ -457,5 +457,39 @@ func TestCaptureRequestInfoDecodesZstdRequestBodyForLog(t *testing.T) {
 	}
 	if !bytes.Equal(restoredBody, compressedBytes) {
 		t.Fatal("request body was not restored with the original compressed bytes")
+	}
+}
+
+func TestCaptureRequestInfoBoundsMetadataZstdExpansion(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	payload := bytes.Repeat([]byte(`{"messages":[{"content":"sentinel-secret"}]}`), 1<<17)
+	var compressed bytes.Buffer
+	encoder, errNewWriter := zstd.NewWriter(&compressed)
+	if errNewWriter != nil {
+		t.Fatalf("zstd.NewWriter: %v", errNewWriter)
+	}
+	if _, errWrite := encoder.Write(payload); errWrite != nil {
+		t.Fatalf("zstd write: %v", errWrite)
+	}
+	if errClose := encoder.Close(); errClose != nil {
+		t.Fatalf("zstd close: %v", errClose)
+	}
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	request := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(compressed.Bytes()))
+	request.Header.Set("Content-Encoding", "zstd")
+	c.Request = request
+
+	info, errCapture := captureRequestInfo(c, true, true)
+	if errCapture != nil {
+		t.Fatalf("captureRequestInfo: %v", errCapture)
+	}
+	if len(info.Body) > int(maxErrorOnlyCapturedRequestBodyBytes)+64 {
+		t.Fatalf("metadata request body length = %d, want bounded expansion", len(info.Body))
+	}
+	if !bytes.Contains(info.Body, []byte("DECOMPRESSED REQUEST BODY TRUNCATED")) {
+		t.Fatalf("metadata request body missing truncation marker")
 	}
 }

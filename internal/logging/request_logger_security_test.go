@@ -63,12 +63,12 @@ func TestMetadataOnlyRequestLogNeverPersistsPayloadsOrSecrets(t *testing.T) {
 	if bytes.Contains(content, []byte(sentinelSecret)) {
 		t.Fatalf("metadata log persisted sentinel secret: %s", content)
 	}
-	for _, forbidden := range []string{"Authorization", "X-Api-Key", "prompt", "system", "messages", "tools", "attachment", "REQUEST BODY", "API REQUEST", "API RESPONSE", "Set-Cookie", "SHA256"} {
+	for _, forbidden := range []string{"Authorization", "X-Api-Key", "prompt", "system", "messages", "tools", "attachment", "REQUEST BODY", "API REQUEST", "API RESPONSE", "Set-Cookie", "SHA256", "safe-model", "/v1/responses"} {
 		if bytes.Contains(content, []byte(forbidden)) {
 			t.Fatalf("metadata log contains forbidden field %q: %s", forbidden, content)
 		}
 	}
-	for _, required := range []string{"Request ID: request-safe-123", "Model: safe-model", "Method: POST", "Route: /v1/responses", "Status: 502", "Error Class:", "Duration MS:", "Input Tokens: 7", "Output Tokens: 3", "Total Tokens: 10", "Request Body Bytes:", "Response Body Bytes:"} {
+	for _, required := range []string{"Request ID: request-safe-123", "Method: POST", "Status: 502", "Error Class:", "Duration MS:", "Input Tokens: 7", "Output Tokens: 3", "Total Tokens: 10", "Request Body Bytes:", "Response Body Bytes:"} {
 		if !bytes.Contains(content, []byte(required)) {
 			t.Fatalf("metadata log missing %q: %s", required, content)
 		}
@@ -119,8 +119,11 @@ func TestMetadataOnlyForwardingOmitsHeadersAndPayloads(t *testing.T) {
 	if len(envelope.Headers) != 0 {
 		t.Fatalf("forwarded headers = %#v, want none", envelope.Headers)
 	}
-	if !strings.Contains(envelope.RequestLog, "Model: safe-model") || !strings.Contains(envelope.RequestLog, "Status: 200") {
+	if !strings.Contains(envelope.RequestLog, "Method: POST") || !strings.Contains(envelope.RequestLog, "Status: 200") {
 		t.Fatalf("forwarded safe metadata missing: %s", envelope.RequestLog)
+	}
+	if strings.Contains(envelope.RequestLog, "safe-model") || strings.Contains(envelope.RequestLog, "/v1/responses") {
+		t.Fatalf("forwarded metadata contains payload or route: %s", envelope.RequestLog)
 	}
 }
 

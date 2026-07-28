@@ -150,8 +150,8 @@ type FileRequestLogger struct {
 	homeEnabled bool
 
 	// metadataOnly prevents request payloads, headers, credentials, and raw errors from
-	// reaching local or forwarded request logs. It is enabled whenever application
-	// file logging is disabled.
+	// reaching local or forwarded request logs. Forced error-only logs use the same
+	// format independently of this explicit override.
 	metadataOnly atomic.Bool
 }
 

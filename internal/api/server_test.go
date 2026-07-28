@@ -1679,6 +1679,9 @@ func TestDefaultRequestLoggerFactory_UsesResolvedLogDirectory(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *FileRequestLogger, got %T", logger)
 	}
+	if fileLogger.IsMetadataOnly() {
+		t.Fatal("application logging-to-file setting must not downgrade intentional request logging")
+	}
 
 	errLog := fileLogger.LogRequestWithOptions(
 		"/v1/chat/completions",

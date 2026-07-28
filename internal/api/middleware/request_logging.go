@@ -54,7 +54,7 @@ func RequestLoggingMiddleware(logger logging.RequestLogger) gin.HandlerFunc {
 		}
 
 		// Capture request information
-		requestInfo, err := captureRequestInfo(c, captureBody)
+		requestInfo, err := captureRequestInfo(c, captureBody, metadataOnly)
 		if err != nil {
 			// Log error but continue processing
 			// In a real implementation, you might want to use a proper logger here
@@ -327,7 +327,7 @@ func shouldCaptureMetadataRequestBody(req *http.Request) bool {
 // captureRequestInfo extracts relevant information from the incoming HTTP request.
 // It captures the URL, method, headers, and body. The request body is read and then
 // restored so that it can be processed by subsequent handlers.
-func captureRequestInfo(c *gin.Context, captureBody bool) (*RequestInfo, error) {
+func captureRequestInfo(c *gin.Context, captureBody, metadataOnly bool) (*RequestInfo, error) {
 	// Capture URL with sensitive query parameters masked
 	maskedQuery := util.MaskSensitiveQuery(c.Request.URL.RawQuery)
 	url := c.Request.URL.Path
@@ -355,7 +355,11 @@ func captureRequestInfo(c *gin.Context, captureBody bool) (*RequestInfo, error) 
 
 		// Restore the body for the actual request processing
 		c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-		body = decodeCapturedRequestBodyForLog(bodyBytes, c.Request.Header.Get("Content-Encoding"))
+		if metadataOnly {
+			body = decodeCapturedRequestBodyForLogWithLimit(bodyBytes, c.Request.Header.Get("Content-Encoding"), maxErrorOnlyCapturedRequestBodyBytes)
+		} else {
+			body = decodeCapturedRequestBodyForLog(bodyBytes, c.Request.Header.Get("Content-Encoding"))
+		}
 	}
 
 	return &RequestInfo{

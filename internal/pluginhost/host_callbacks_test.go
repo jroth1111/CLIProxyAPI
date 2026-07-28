@@ -78,7 +78,7 @@ func TestHostHTTPDoCallbackRestoresRegisteredRequestContext(t *testing.T) {
 
 	host := New()
 	host.mu.Lock()
-	host.runtimeConfig = &config.Config{LoggingToFile: true, SDKConfig: config.SDKConfig{RequestLog: true}}
+	host.runtimeConfig = &config.Config{SDKConfig: config.SDKConfig{RequestLog: true}}
 	host.mu.Unlock()
 	callbackID, closeCallback := host.openCallbackContext(ctx)
 	defer closeCallback()
