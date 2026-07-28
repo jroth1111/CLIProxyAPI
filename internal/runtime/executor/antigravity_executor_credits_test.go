@@ -210,12 +210,35 @@ func TestClassifyAntigravity429(t *testing.T) {
 		if got := classifyAntigravity429(body); got != antigravity429QuotaExhausted {
 			t.Fatalf("classifyAntigravity429() = %q, want %q", got, antigravity429QuotaExhausted)
 		}
+		if antigravityShouldTryFallbackFor429(body) {
+			t.Fatal("quota exhaustion should not retry a fallback endpoint")
+		}
+	})
+
+	t.Run("insufficient Google One credits is terminal for this credential", func(t *testing.T) {
+		body := []byte(`{
+			"error": {
+				"status": "RESOURCE_EXHAUSTED",
+				"details": [
+					{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "INSUFFICIENT_G1_CREDITS_BALANCE"}
+				]
+			}
+		}`)
+		if got := classifyAntigravity429(body); got != antigravity429QuotaExhausted {
+			t.Fatalf("classifyAntigravity429() = %q, want %q", got, antigravity429QuotaExhausted)
+		}
+		if antigravityShouldTryFallbackFor429(body) {
+			t.Fatal("credit exhaustion should not retry a fallback endpoint")
+		}
 	})
 
 	t.Run("unstructured 429 defaults to soft rate limit", func(t *testing.T) {
 		body := []byte(`{"error":{"message":"too many requests"}}`)
 		if got := classifyAntigravity429(body); got != antigravity429SoftRateLimit {
 			t.Fatalf("classifyAntigravity429() = %q, want %q", got, antigravity429SoftRateLimit)
+		}
+		if !antigravityShouldTryFallbackFor429(body) {
+			t.Fatal("soft endpoint rate limit should retain fallback behavior")
 		}
 	})
 }

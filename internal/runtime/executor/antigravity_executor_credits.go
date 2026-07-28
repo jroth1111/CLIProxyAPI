@@ -240,6 +240,9 @@ func decideAntigravity429(body []byte) antigravity429Decision {
 			case strings.EqualFold(reason, "QUOTA_EXHAUSTED"):
 				decision.kind = antigravity429DecisionFullQuotaExhausted
 				return decision
+			case strings.EqualFold(reason, "INSUFFICIENT_G1_CREDITS_BALANCE"):
+				decision.kind = antigravity429DecisionFullQuotaExhausted
+				return decision
 			case strings.EqualFold(reason, "RATE_LIMIT_EXCEEDED"):
 				if decision.retryAfter == nil {
 					decision.kind = antigravity429DecisionSoftRetry
@@ -269,6 +272,10 @@ func decideAntigravity429(body []byte) antigravity429Decision {
 
 	decision.kind = antigravity429DecisionSoftRetry
 	return decision
+}
+
+func antigravityShouldTryFallbackFor429(body []byte) bool {
+	return decideAntigravity429(body).kind == antigravity429DecisionSoftRetry
 }
 
 func antigravityCreditsRetryEnabled(cfg *config.Config) bool {
