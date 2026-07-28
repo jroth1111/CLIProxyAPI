@@ -63,6 +63,25 @@ esac
 EOF
 chmod +x "$workdir/bin/curl"
 
+cat >"$workdir/bin/reason-assembly" <<'EOF'
+#!/bin/sh
+set -eu
+if [ -n "${MOCK_SYNC_LOG:-}" ]; then
+	printf 'reason-assembly %s\n' "$*" >>"$MOCK_SYNC_LOG"
+fi
+EOF
+cat >"$workdir/bin/ccycouncil" <<'EOF'
+#!/bin/sh
+set -eu
+if [ -n "${MOCK_SYNC_LOG:-}" ]; then
+	printf 'ccycouncil %s suppress=%s\n' "$*" "${REASON_ASSEMBLY_SUPPRESS_DEPRECATION:-}" >>"$MOCK_SYNC_LOG"
+fi
+if [ "${REASON_ASSEMBLY_SUPPRESS_DEPRECATION:-}" != 1 ]; then
+	printf '%s\n' 'deprecated: use reason-assembly' >&2
+fi
+EOF
+chmod +x "$workdir/bin/reason-assembly" "$workdir/bin/ccycouncil"
+
 cat >"$workdir/config.yaml" <<'EOF'
 host: 127.0.0.1
 port: 8317
@@ -86,10 +105,11 @@ run_launcher() {
 	models=$1
 	catalog=$2
 	shift 2
-	PATH="$workdir/bin:$PATH" \
+	PATH="$workdir/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
 		CCYPROXY_CONFIG="$workdir/config.yaml" \
 		MOCK_MODELS="$models" \
 		MOCK_CATALOG="$catalog" \
+		MOCK_SYNC_LOG="${MOCK_SYNC_LOG:-}" \
 		zsh -c 'source "$1"; shift; ccyproxy "$@"' -- "$launcher" "$@"
 }
 
@@ -97,6 +117,18 @@ complete_output=$(run_launcher "$workdir/models-direct.json" "$workdir/catalog-c
 printf '%s\n' "$complete_output" | grep -q '^main_model=gpt-5.6-sol$'
 printf '%s\n' "$complete_output" | grep -q '^compact_trigger=287000$'
 printf '%s\n' "$complete_output" | grep -q '^auto_compact_window=320000$'
+
+cat >"$workdir/catalog-with-phantom.json" <<'EOF'
+{"models":[{"slug":"gpt-5.6-sol","context_window":372000,"max_output_tokens":128000,"translation_margin_tokens":52000,"auto_compact_token_limit":287000,"capacity_complete":true,"capacity_source":"test","capacity_blockers":[],"credential_availability":{"status":"available","availability_complete":true,"total_credentials":1,"eligible_credentials":1,"cooling_credentials":0,"blocked_credentials":0,"availability_blockers":[]}},{"slug":"gpt-5.6-luna","context_window":200000,"max_output_tokens":64000,"translation_margin_tokens":13000,"auto_compact_token_limit":160000,"capacity_complete":true,"capacity_source":"test","capacity_blockers":[],"credential_availability":{"status":"available","availability_complete":true,"total_credentials":1,"eligible_credentials":1,"cooling_credentials":0,"blocked_credentials":0,"availability_blockers":[]}}]}
+EOF
+phantom_output=$(run_launcher "$workdir/models-direct.json" "$workdir/catalog-with-phantom.json" --show-config)
+printf '%s\n' "$phantom_output" | grep -q '^haiku_model=gpt-5.6-sol$'
+listed_models=$(run_launcher "$workdir/models-direct.json" "$workdir/catalog-with-phantom.json" --list-models)
+printf '%s\n' "$listed_models" | grep -q '^gpt-5.6-sol '
+if printf '%s\n' "$listed_models" | grep -q '^gpt-5.6-luna '; then
+	printf '%s\n' 'launcher test: metadata-only model leaked through raw catalogue filter' >&2
+	exit 1
+fi
 
 cat >"$workdir/catalog-invalid-margin.json" <<'EOF'
 {"models":[{"slug":"gpt-5.6-sol","context_window":372000,"max_output_tokens":128000,"capacity_complete":true,"capacity_source":"test","capacity_blockers":[],"credential_availability":{"status":"available","availability_complete":true,"total_credentials":1,"eligible_credentials":1,"cooling_credentials":0,"blocked_credentials":0,"availability_blockers":[]}}]}
@@ -165,3 +197,26 @@ if run_launcher "$workdir/models-route.json" "$workdir/catalog-route-incomplete.
 	exit 1
 fi
 grep -q "route 'worker' has no currently eligible candidate" "$workdir/route-incomplete.err"
+
+: >"$workdir/sync.log"
+MOCK_SYNC_LOG="$workdir/sync.log" run_launcher "$workdir/models-direct.json" "$workdir/catalog-complete.json" --show-config >"$workdir/canonical-sync.out" 2>"$workdir/canonical-sync.err"
+grep -q '^reason-assembly sync --json$' "$workdir/sync.log"
+if grep -q '^ccycouncil ' "$workdir/sync.log"; then
+	printf '%s\n' 'launcher test: deprecated command ran despite canonical command availability' >&2
+	exit 1
+fi
+
+rm "$workdir/bin/reason-assembly"
+: >"$workdir/sync.log"
+MOCK_SYNC_LOG="$workdir/sync.log" run_launcher "$workdir/models-direct.json" "$workdir/catalog-complete.json" --show-config >"$workdir/compat-sync.out" 2>"$workdir/compat-sync.err"
+grep -q '^ccycouncil sync --json suppress=1$' "$workdir/sync.log"
+grep -q 'using deprecated ccycouncil fallback' "$workdir/compat-sync.err"
+if grep -q 'deprecated: use reason-assembly' "$workdir/compat-sync.err"; then
+	printf '%s\n' 'launcher test: compatibility wrapper warning was not suppressed' >&2
+	exit 1
+fi
+
+rm "$workdir/bin/ccycouncil"
+run_launcher "$workdir/models-direct.json" "$workdir/catalog-complete.json" --show-config >"$workdir/no-sync.out" 2>"$workdir/no-sync.err"
+grep -q '^main_model=gpt-5.6-sol$' "$workdir/no-sync.out"
+grep -q 'reason-assembly is unavailable; continuing with live raw-model filtering' "$workdir/no-sync.err"
