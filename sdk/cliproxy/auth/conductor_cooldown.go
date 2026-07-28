@@ -1519,9 +1519,10 @@ func isMissingModelPhrase(value string) bool {
 
 // isRequestInvalidError returns true if the error represents a client request
 // error that should not be retried. Specifically, it treats 400 responses with
-// "invalid_request_error", request-scoped 404 item misses caused by `store=false`,
-// and all 422 responses as request-shape failures, where switching auths or
-// pooled upstream models will not help. Model-support errors are excluded so
+// "invalid_request_error", input-context 413 responses, all 422 responses, and
+// request-scoped 404 item misses caused by `store=false` as request-shape failures,
+// where switching auths or pooled upstream models will not help. Model-support
+// errors are excluded so
 // routing can fall through to another auth or upstream.
 func isRequestInvalidError(err error) bool {
 	if err == nil {
@@ -1549,6 +1550,12 @@ func isRequestInvalidError(err error) bool {
 			strings.Contains(msg, "FAILED_PRECONDITION")
 	case http.StatusNotFound:
 		return isRequestScopedNotFoundMessage(err.Error())
+	case http.StatusRequestEntityTooLarge:
+		msg := strings.ToLower(err.Error())
+		return strings.Contains(msg, "context_too_large") ||
+			strings.Contains(msg, "context_length_exceeded") ||
+			strings.Contains(msg, "input exceeds context window") ||
+			strings.Contains(msg, "input exceeds the context window")
 	case http.StatusUnprocessableEntity:
 		return true
 	case http.StatusInternalServerError:

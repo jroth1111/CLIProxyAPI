@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/gin-gonic/gin"
@@ -60,7 +61,12 @@ func (h *OpenAIAPIHandler) Models() []map[string]any {
 // and specifications in OpenAI-compatible format.
 func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 	if _, ok := c.Request.URL.Query()["client_version"]; ok {
-		c.JSON(http.StatusOK, h.codexClientModelsResponse())
+		response := h.codexClientModelsResponse()
+		if strings.EqualFold(strings.TrimSpace(c.Query("client_version")), "ccyproxy") {
+			h.addCapacityMetadata(response)
+			h.addCredentialAvailability(response)
+		}
+		c.JSON(http.StatusOK, response)
 		return
 	}
 

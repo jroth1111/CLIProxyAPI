@@ -137,6 +137,30 @@ func TestConvertClaudeRequestToCodex_MessageSystemRoleWrapsAsUserReminder(t *tes
 	}
 }
 
+func TestConvertClaudeRequestToCodex_OmitsUnsupportedMaxOutputTokens(t *testing.T) {
+	inputJSON := []byte(`{
+		"max_tokens": 8192,
+		"stream": false,
+		"thinking": {"type": "enabled", "budget_tokens": 32000},
+		"tools": [{"name": "lookup", "description": "Look up a value", "input_schema": {"type": "object"}}],
+		"messages": [{"role": "user", "content": "hello"}]
+	}`)
+
+	result := ConvertClaudeRequestToCodex("test-model", inputJSON, false)
+	if got := gjson.GetBytes(result, "max_output_tokens"); got.Exists() {
+		t.Fatalf("max_output_tokens must be omitted because the Codex API rejects it; got %s", got.Raw)
+	}
+	if got := gjson.GetBytes(result, "reasoning.effort").String(); got == "" || got == "medium" {
+		t.Fatalf("reasoning.effort = %q, want translated explicit effort", got)
+	}
+	if got := gjson.GetBytes(result, "tools.0.name").String(); got != "lookup" {
+		t.Fatalf("tools.0.name = %q, want lookup", got)
+	}
+	if !gjson.GetBytes(result, "stream").Bool() {
+		t.Fatal("stream = false, want Codex streaming transport enabled")
+	}
+}
+
 func TestConvertClaudeRequestToCodex_ParallelToolCalls(t *testing.T) {
 	tests := []struct {
 		name                  string

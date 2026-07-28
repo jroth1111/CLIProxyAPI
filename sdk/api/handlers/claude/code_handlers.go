@@ -14,6 +14,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -407,6 +409,7 @@ func claudeErrorDetailFromText(status int, errText string) (string, string) {
 		message = http.StatusText(status)
 	}
 	errType := claudeErrorTypeFromStatus(status)
+	errorCode := ""
 
 	var payload map[string]any
 	if json.Valid([]byte(message)) {
@@ -415,14 +418,20 @@ func claudeErrorDetailFromText(status int, errText string) (string, string) {
 				if t, ok := e["type"].(string); ok && strings.TrimSpace(t) != "" {
 					errType = strings.TrimSpace(t)
 				}
+				if c, ok := e["code"].(string); ok {
+					errorCode = strings.TrimSpace(c)
+				}
 				if m, ok := e["message"].(string); ok && strings.TrimSpace(m) != "" {
 					message = strings.TrimSpace(m)
-				} else if c, ok := e["code"].(string); ok && strings.TrimSpace(c) != "" {
-					message = strings.TrimSpace(c)
+				} else if errorCode != "" {
+					message = errorCode
 				}
 			} else {
 				if t, ok := payload["type"].(string); ok && strings.TrimSpace(t) != "" && strings.TrimSpace(t) != "error" {
 					errType = strings.TrimSpace(t)
+				}
+				if c, ok := payload["code"].(string); ok {
+					errorCode = strings.TrimSpace(c)
 				}
 				if m, ok := payload["message"].(string); ok && strings.TrimSpace(m) != "" {
 					message = strings.TrimSpace(m)
@@ -431,7 +440,58 @@ func claudeErrorDetailFromText(status int, errText string) (string, string) {
 		}
 	}
 
+	if normalized, ok := normalizeClaudeInputContextError(status, errorCode, message); ok {
+		return "invalid_request_error", normalized
+	}
 	return errType, message
+}
+
+var (
+	claudeTokenComparisonPattern = regexp.MustCompile(`(?i)([0-9][0-9,]*)\s+tokens?\s*>\s*([0-9][0-9,]*)\s+(?:tokens?\s+)?maximum`)
+	claudeMaximumFirstPattern    = regexp.MustCompile(`(?i)maximum(?: context (?:length|window))?(?: is| of|:)?\s*([0-9][0-9,]*)\s+tokens?[\s\S]{0,200}?(?:input|messages?|prompt|request)[^0-9]{0,80}([0-9][0-9,]*)\s+tokens?`)
+	claudeInputFirstPattern      = regexp.MustCompile(`(?i)(?:input|messages?|prompt|request)[^0-9]{0,80}([0-9][0-9,]*)\s+tokens?[\s\S]{0,200}?maximum(?: context (?:length|window))?(?: is| of|:)?\s*([0-9][0-9,]*)\s+tokens?`)
+)
+
+func normalizeClaudeInputContextError(status int, errorCode, message string) (string, bool) {
+	if status != http.StatusBadRequest && status != http.StatusRequestEntityTooLarge {
+		return "", false
+	}
+
+	code := strings.ToLower(strings.TrimSpace(errorCode))
+	lowerMessage := strings.ToLower(message)
+	isInputContextError := code == "context_too_large" || code == "context_length_exceeded" ||
+		strings.Contains(lowerMessage, "input exceeds context window") ||
+		strings.Contains(lowerMessage, "input exceeds the context window")
+	if !isInputContextError {
+		return "", false
+	}
+
+	if inputTokens, maximumTokens, ok := claudeInputContextTokenCounts(message); ok {
+		return fmt.Sprintf("Prompt is too long: %d tokens > %d maximum", inputTokens, maximumTokens), true
+	}
+	return "Prompt is too long", true
+}
+
+func claudeInputContextTokenCounts(message string) (int64, int64, bool) {
+	if match := claudeTokenComparisonPattern.FindStringSubmatch(message); len(match) == 3 {
+		return validClaudeTokenCounts(match[1], match[2])
+	}
+	if match := claudeMaximumFirstPattern.FindStringSubmatch(message); len(match) == 3 {
+		return validClaudeTokenCounts(match[2], match[1])
+	}
+	if match := claudeInputFirstPattern.FindStringSubmatch(message); len(match) == 3 {
+		return validClaudeTokenCounts(match[1], match[2])
+	}
+	return 0, 0, false
+}
+
+func validClaudeTokenCounts(inputValue, maximumValue string) (int64, int64, bool) {
+	inputTokens, errInput := strconv.ParseInt(strings.ReplaceAll(inputValue, ",", ""), 10, 64)
+	maximumTokens, errMaximum := strconv.ParseInt(strings.ReplaceAll(maximumValue, ",", ""), 10, 64)
+	if errInput != nil || errMaximum != nil || inputTokens <= maximumTokens || maximumTokens <= 0 {
+		return 0, 0, false
+	}
+	return inputTokens, maximumTokens, true
 }
 
 func claudeErrorTypeFromStatus(status int) string {

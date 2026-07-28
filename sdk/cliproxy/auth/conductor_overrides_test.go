@@ -1181,6 +1181,10 @@ func TestManager_RequestScopedErrorStopsCredentialFallbackWithoutSuspendingAuth(
 		status:  http.StatusRequestEntityTooLarge,
 		message: `{"error":{"message":"upstream websocket message too big","type":"invalid_request_error","code":"message_too_big"}}`,
 	}
+	inputContextTooLargeErr := &Error{
+		HTTPStatus: http.StatusRequestEntityTooLarge,
+		Message:    `{"error":{"type":"invalid_request_error","code":"context_too_large","message":"input exceeds context window"}}`,
+	}
 	invalidRequestErr := &Error{
 		HTTPStatus: http.StatusBadRequest,
 		Message:    `{"error":{"type":"invalid_request_error","code":"invalid_value","message":"Invalid input."}}`,
@@ -1200,6 +1204,8 @@ func TestManager_RequestScopedErrorStopsCredentialFallbackWithoutSuspendingAuth(
 		{name: "streaming incomplete", stream: true, err: incompleteErr, wantStatus: http.StatusRequestTimeout},
 		{name: "streaming codex websocket message too big", provider: "codex", stream: true, err: messageTooBigErr, wantStatus: http.StatusRequestEntityTooLarge},
 		{name: "streaming xai websocket message too big", provider: "xai", stream: true, err: messageTooBigErr, wantStatus: http.StatusRequestEntityTooLarge},
+		{name: "non-streaming input context too large", err: inputContextTooLargeErr, wantStatus: http.StatusRequestEntityTooLarge},
+		{name: "streaming input context too large", stream: true, err: inputContextTooLargeErr, wantStatus: http.StatusRequestEntityTooLarge},
 		{name: "non-streaming invalid request", err: invalidRequestErr, wantStatus: http.StatusBadRequest},
 		{name: "streaming invalid request", stream: true, err: invalidRequestErr, wantStatus: http.StatusBadRequest},
 		{name: "non-streaming bad request", err: badRequestErr, wantStatus: http.StatusBadRequest},
