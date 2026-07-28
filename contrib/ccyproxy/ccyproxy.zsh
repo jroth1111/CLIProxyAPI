@@ -165,12 +165,13 @@ function ccyproxy {
       candidates = Array(route["candidates"]).select { |id| by_slug[id] }
       eligible = candidates.find do |id|
         availability = by_slug[id]["credential_availability"]
-        availability.nil? || availability["eligible_credentials"].to_i > 0
+        availability.is_a?(Hash) && availability["availability_complete"] == true &&
+          availability["status"] == "available" && availability["eligible_credentials"].to_i > 0
       end
-      puts(eligible || candidates.first.to_s)
+      puts eligible.to_s
     ')"
   if [[ -z "$proxy_model" ]]; then
-    echo "ccyproxy: route '$proxy_requested_model' has no currently advertised candidate" >&2
+    echo "ccyproxy: route '$proxy_requested_model' has no currently eligible candidate with complete availability metadata" >&2
     return 2
   fi
 
@@ -183,7 +184,8 @@ function ccyproxy {
         model = by_slug[slug]
         next false unless model
         availability = model["credential_availability"]
-        availability.nil? || availability["eligible_credentials"].to_i > 0
+        availability.is_a?(Hash) && availability["availability_complete"] == true &&
+          availability["status"] == "available" && availability["eligible_credentials"].to_i > 0
       end
       puts(selected || ENV.fetch("PROXY_MAIN_MODEL"))
     ')"
@@ -214,16 +216,29 @@ function ccyproxy {
       end
       failures = ENV.fetch("PROXY_MODELS").split(",").uniq.each_with_object([]) do |selected, out|
         candidates = resolve_all.call(selected)
-        model = candidates.find do |candidate|
-          availability = candidate["credential_availability"]
-          availability.nil? || availability["eligible_credentials"].to_i > 0
-        end || candidates.first
-        unless model
+        unless candidates.any?
           out << "#{selected}: not advertised"
           next
         end
-        availability = model["credential_availability"]
-        next if availability.nil? || availability["eligible_credentials"].to_i > 0
+        model = candidates.find do |candidate|
+          availability = candidate["credential_availability"]
+          availability.is_a?(Hash) && availability["availability_complete"] == true &&
+            availability["status"] == "available" && availability["eligible_credentials"].to_i > 0
+        end
+        next if model
+
+        candidate = candidates.first
+        availability = candidate["credential_availability"]
+        unless availability.is_a?(Hash)
+          out << "#{selected}: availability metadata missing"
+          next
+        end
+        unless availability["availability_complete"] == true
+          blockers = Array(availability["availability_blockers"])
+          suffix = blockers.empty? ? "" : " (#{blockers.join(", ")})"
+          out << "#{selected}: availability metadata incomplete#{suffix}"
+          next
+        end
         detail = "#{selected}: #{availability["status"] || "unavailable"} (eligible #{availability["eligible_credentials"] || 0}/#{availability["total_credentials"] || 0})"
         if availability["cooldown_until"]
           begin
@@ -266,7 +281,7 @@ function ccyproxy {
   proxy_capacity_complete="${proxy_capacity[5]:-false}"
   proxy_capacity_source="${proxy_capacity[6]:-unknown}"
   proxy_capacity_blockers="${proxy_capacity[7]:-[]}"
-  if [[ "$proxy_capacity_complete" != true ]] || (( proxy_context_window <= 0 || proxy_max_output_tokens <= 0 || proxy_translation_margin < 0 )); then
+  if [[ "$proxy_capacity_complete" != true ]] || (( proxy_context_window <= 0 || proxy_max_output_tokens <= 0 || proxy_translation_margin <= 0 )); then
     echo "ccyproxy: incomplete capacity metadata for main='$proxy_model': $proxy_capacity_blockers" >&2
     return 2
   fi

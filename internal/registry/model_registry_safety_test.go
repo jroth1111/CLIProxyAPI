@@ -29,6 +29,68 @@ func TestGetModelInfoReturnsClone(t *testing.T) {
 	}
 }
 
+func TestGetModelInfoProviderlessUsesConservativeCapacity(t *testing.T) {
+	r := newTestModelRegistry()
+	r.RegisterClient("small-client", "provider-b", []*ModelInfo{{
+		ID:                  "shared-model",
+		ContextLength:       200000,
+		MaxCompletionTokens: 64000,
+	}})
+	r.RegisterClient("large-client", "provider-a", []*ModelInfo{{
+		ID:                  "shared-model",
+		ContextLength:       372000,
+		MaxCompletionTokens: 128000,
+	}})
+
+	info := r.GetModelInfo("shared-model", "")
+	if info == nil {
+		t.Fatal("expected model info")
+	}
+	if info.ContextLength != 200000 || info.InputTokenLimit != 200000 {
+		t.Fatalf("providerless context capacity = %d/%d, want 200000", info.ContextLength, info.InputTokenLimit)
+	}
+	if info.MaxCompletionTokens != 64000 || info.OutputTokenLimit != 64000 {
+		t.Fatalf("providerless output capacity = %d/%d, want 64000", info.MaxCompletionTokens, info.OutputTokenLimit)
+	}
+}
+
+func TestGetModelInfoProviderlessIntersectsDuplicateClientEntries(t *testing.T) {
+	r := newTestModelRegistry()
+	r.RegisterClient("duplicate-client", "provider-a", []*ModelInfo{
+		{ID: "shared-model", ContextLength: 372000, MaxCompletionTokens: 128000},
+		{ID: "shared-model", ContextLength: 200000, MaxCompletionTokens: 64000},
+	})
+
+	info := r.GetModelInfo("shared-model", "")
+	if info == nil {
+		t.Fatal("expected model info")
+	}
+	if info.ContextLength != 200000 || info.MaxCompletionTokens != 64000 {
+		t.Fatalf("duplicate capacity = %d/%d, want 200000/64000", info.ContextLength, info.MaxCompletionTokens)
+	}
+}
+
+func TestGetModelInfoProviderlessFailsClosedOnIncompleteCapacity(t *testing.T) {
+	r := newTestModelRegistry()
+	r.RegisterClient("complete-client", "provider-a", []*ModelInfo{{
+		ID:                  "shared-model",
+		ContextLength:       372000,
+		MaxCompletionTokens: 128000,
+	}})
+	r.RegisterClient("incomplete-client", "provider-b", []*ModelInfo{{
+		ID:            "shared-model",
+		ContextLength: 200000,
+	}})
+
+	info := r.GetModelInfo("shared-model", "")
+	if info == nil {
+		t.Fatal("expected model info")
+	}
+	if info.ContextLength != 0 || info.InputTokenLimit != 0 || info.MaxCompletionTokens != 0 || info.OutputTokenLimit != 0 {
+		t.Fatalf("providerless capacity must fail closed, got context=%d/%d output=%d/%d", info.ContextLength, info.InputTokenLimit, info.MaxCompletionTokens, info.OutputTokenLimit)
+	}
+}
+
 func TestGetModelsForClientReturnsClones(t *testing.T) {
 	r := newTestModelRegistry()
 	r.RegisterClient("client-1", "gemini", []*ModelInfo{{

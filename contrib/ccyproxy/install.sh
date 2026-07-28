@@ -43,6 +43,12 @@ if [ ! -r "$source_file" ]; then
 	exit 1
 fi
 
+launcher_version=$(sed -n "s/^typeset -g CCYPROXY_LAUNCHER_VERSION='\\([^']*\\)'$/\\1/p" "$source_file")
+if [ "$launcher_version" != "$version" ]; then
+	printf 'install.sh: launcher version mismatch: installer=%s launcher=%s\n' "$version" "${launcher_version:-missing}" >&2
+	exit 1
+fi
+
 install_dir=$(dirname -- "$target")
 mkdir -p "$install_dir"
 tmp="$target.tmp.$$"

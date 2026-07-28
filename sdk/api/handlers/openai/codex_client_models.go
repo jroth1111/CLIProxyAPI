@@ -137,11 +137,25 @@ func positiveCapacityInteger(value any) (int, bool) {
 }
 
 func (h *OpenAIAPIHandler) addCredentialAvailability(response map[string]any) {
-	if h == nil || h.AuthManager == nil || response == nil {
+	if response == nil {
 		return
 	}
 	models, ok := response["models"].([]map[string]any)
 	if !ok {
+		return
+	}
+	if h == nil || h.BaseAPIHandler == nil || h.AuthManager == nil {
+		for _, model := range models {
+			model["credential_availability"] = map[string]any{
+				"status":                "incomplete",
+				"availability_complete": false,
+				"total_credentials":     0,
+				"eligible_credentials":  0,
+				"cooling_credentials":   0,
+				"blocked_credentials":   0,
+				"availability_blockers": []string{"auth_manager_unavailable"},
+			}
+		}
 		return
 	}
 	now := time.Now()
@@ -158,11 +172,13 @@ func (h *OpenAIAPIHandler) addCredentialAvailability(response map[string]any) {
 			status = "cooling"
 		}
 		metadata := map[string]any{
-			"status":               status,
-			"total_credentials":    summary.TotalCredentials,
-			"eligible_credentials": summary.EligibleCredentials,
-			"cooling_credentials":  summary.CoolingCredentials,
-			"blocked_credentials":  summary.BlockedCredentials,
+			"status":                status,
+			"availability_complete": true,
+			"total_credentials":     summary.TotalCredentials,
+			"eligible_credentials":  summary.EligibleCredentials,
+			"cooling_credentials":   summary.CoolingCredentials,
+			"blocked_credentials":   summary.BlockedCredentials,
+			"availability_blockers": []string{},
 		}
 		if summary.CooldownUntil.After(now) {
 			retryAfter := int(math.Ceil(summary.CooldownUntil.Sub(now).Seconds()))

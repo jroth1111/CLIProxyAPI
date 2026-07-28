@@ -240,6 +240,38 @@ func TestAddCapacityMetadataReportsCompleteDeterministicContract(t *testing.T) {
 	}
 }
 
+func TestAddCapacityMetadataIntersectsRegisteredCapacities(t *testing.T) {
+	modelID := "ccyproxy-shared-capacity-model"
+	modelRegistry := registry.GetGlobalRegistry()
+	modelRegistry.RegisterClient("ccyproxy-small-capacity-client", "provider-b", []*registry.ModelInfo{{
+		ID:                  modelID,
+		ContextLength:       200000,
+		MaxCompletionTokens: 64000,
+	}})
+	modelRegistry.RegisterClient("ccyproxy-large-capacity-client", "provider-a", []*registry.ModelInfo{{
+		ID:                  modelID,
+		ContextLength:       372000,
+		MaxCompletionTokens: 128000,
+	}})
+	t.Cleanup(func() {
+		modelRegistry.UnregisterClient("ccyproxy-large-capacity-client")
+		modelRegistry.UnregisterClient("ccyproxy-small-capacity-client")
+	})
+
+	response := map[string]any{
+		"models": []map[string]any{{
+			"slug":           modelID,
+			"context_window": 200000,
+		}},
+	}
+	(&OpenAIAPIHandler{}).addCapacityMetadata(response)
+
+	model := response["models"].([]map[string]any)[0]
+	if model["max_output_tokens"] != 64000 || model["capacity_complete"] != true {
+		t.Fatalf("conservative shared capacity = %#v", model)
+	}
+}
+
 func TestAddCapacityMetadataFailsClosedOnInvalidCapacity(t *testing.T) {
 	modelID := "ccyproxy-invalid-capacity-model"
 	clientID := "ccyproxy-invalid-capacity-client"
@@ -315,11 +347,37 @@ func TestAddCapacityMetadataFailsClosedWithoutProviderContext(t *testing.T) {
 		t.Fatalf("capacity_complete = %#v, want false", got)
 	}
 	blockers, ok := model["capacity_blockers"].([]string)
-	if !ok || len(blockers) != 1 || blockers[0] != "missing_or_invalid_provider_context_window" {
-		t.Fatalf("capacity_blockers = %#v", model["capacity_blockers"])
+	want := []string{"missing_or_invalid_max_output_tokens", "missing_or_invalid_provider_context_window"}
+	if !ok || len(blockers) != len(want) {
+		t.Fatalf("capacity_blockers = %#v, want %#v", model["capacity_blockers"], want)
+	}
+	for i := range want {
+		if blockers[i] != want[i] {
+			t.Fatalf("capacity_blockers = %#v, want %#v", blockers, want)
+		}
 	}
 	if _, exists := model["translation_margin_tokens"]; exists {
 		t.Fatalf("translation_margin_tokens must be absent without provider context: %#v", model)
+	}
+}
+
+func TestAddCredentialAvailabilityReportsIncompleteWithoutManager(t *testing.T) {
+	response := map[string]any{
+		"models": []map[string]any{{"slug": "ccyproxy-no-auth-manager"}},
+	}
+	(&OpenAIAPIHandler{}).addCredentialAvailability(response)
+
+	model := response["models"].([]map[string]any)[0]
+	availability, ok := model["credential_availability"].(map[string]any)
+	if !ok {
+		t.Fatalf("credential_availability type = %T", model["credential_availability"])
+	}
+	if availability["status"] != "incomplete" || availability["availability_complete"] != false || availability["eligible_credentials"] != 0 {
+		t.Fatalf("credential_availability = %#v", availability)
+	}
+	blockers, ok := availability["availability_blockers"].([]string)
+	if !ok || len(blockers) != 1 || blockers[0] != "auth_manager_unavailable" {
+		t.Fatalf("availability_blockers = %#v", availability["availability_blockers"])
 	}
 }
 

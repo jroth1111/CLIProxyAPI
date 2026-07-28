@@ -287,10 +287,11 @@ func (r *ModelRegistry) RegisterClient(clientID, clientProvider string, models [
 		}
 		rawModelIDs = append(rawModelIDs, model.ID)
 		newCounts[model.ID]++
-		if _, exists := newModels[model.ID]; exists {
+		if existing, exists := newModels[model.ID]; exists {
+			newModels[model.ID] = intersectModelCapacity(existing, model)
 			continue
 		}
-		newModels[model.ID] = model
+		newModels[model.ID] = cloneModelInfo(model)
 		uniqueModelIDs = append(uniqueModelIDs, model.ID)
 	}
 
@@ -1150,10 +1151,91 @@ func (r *ModelRegistry) GetModelInfo(modelID, provider string) *ModelInfo {
 				}
 			}
 		}
-		// Fallback to global info (last registered)
+		if provider == "" {
+			return r.conservativeModelInfoLocked(modelID, reg)
+		}
 		return cloneModelInfo(reg.Info)
 	}
 	return nil
+}
+
+func (r *ModelRegistry) conservativeModelInfoLocked(modelID string, reg *ModelRegistration) *ModelInfo {
+	if reg == nil || reg.Info == nil {
+		return nil
+	}
+
+	result := cloneModelInfo(reg.Info)
+	contextLimit := 0
+	outputLimit := 0
+	hasRegistration := false
+	complete := true
+	for _, infos := range r.clientModelInfos {
+		info := infos[modelID]
+		if info == nil {
+			continue
+		}
+		hasRegistration = true
+
+		clientContextLimit := conservativePositiveLimit(info.ContextLength, info.InputTokenLimit)
+		clientOutputLimit := conservativePositiveLimit(info.MaxCompletionTokens, info.OutputTokenLimit)
+		if clientContextLimit <= 0 || clientOutputLimit <= 0 {
+			complete = false
+			continue
+		}
+		if contextLimit == 0 || clientContextLimit < contextLimit {
+			contextLimit = clientContextLimit
+		}
+		if outputLimit == 0 || clientOutputLimit < outputLimit {
+			outputLimit = clientOutputLimit
+		}
+	}
+
+	if !hasRegistration || !complete {
+		contextLimit = 0
+		outputLimit = 0
+	}
+	result.ContextLength = contextLimit
+	result.InputTokenLimit = contextLimit
+	result.MaxCompletionTokens = outputLimit
+	result.OutputTokenLimit = outputLimit
+	return result
+}
+
+func intersectModelCapacity(base, next *ModelInfo) *ModelInfo {
+	if base == nil || next == nil {
+		return nil
+	}
+	result := cloneModelInfo(base)
+	baseContext := conservativePositiveLimit(base.ContextLength, base.InputTokenLimit)
+	nextContext := conservativePositiveLimit(next.ContextLength, next.InputTokenLimit)
+	baseOutput := conservativePositiveLimit(base.MaxCompletionTokens, base.OutputTokenLimit)
+	nextOutput := conservativePositiveLimit(next.MaxCompletionTokens, next.OutputTokenLimit)
+	contextLimit := 0
+	outputLimit := 0
+	if baseContext > 0 && nextContext > 0 {
+		contextLimit = conservativePositiveLimit(baseContext, nextContext)
+	}
+	if baseOutput > 0 && nextOutput > 0 {
+		outputLimit = conservativePositiveLimit(baseOutput, nextOutput)
+	}
+	result.ContextLength = contextLimit
+	result.InputTokenLimit = contextLimit
+	result.MaxCompletionTokens = outputLimit
+	result.OutputTokenLimit = outputLimit
+	return result
+}
+
+func conservativePositiveLimit(values ...int) int {
+	limit := 0
+	for _, value := range values {
+		if value <= 0 {
+			continue
+		}
+		if limit == 0 || value < limit {
+			limit = value
+		}
+	}
+	return limit
 }
 
 // convertModelToMap converts ModelInfo to the appropriate format for different handler types
