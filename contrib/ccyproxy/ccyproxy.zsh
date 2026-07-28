@@ -22,7 +22,7 @@ _ccyproxy_unset_provider_env() {
 #                 [--list-models|--list-routes|--list-all|--show-config] [claude arguments...]
 function ccyproxy {
   local proxy_config="${CCYPROXY_CONFIG:-${HOME}/Library/Application Support/AIUsage/CLIProxyAPI/config.yaml}"
-  local proxy_host proxy_port proxy_key proxy_base proxy_models proxy_catalog
+  local proxy_host proxy_port proxy_key proxy_base proxy_models proxy_catalog proxy_raw_ids
   local proxy_routes proxy_route_config proxy_model proxy_requested_model proxy_haiku_model
   local proxy_context_window proxy_max_output_tokens proxy_translation_margin proxy_provider_compact_limit
   local proxy_output_allowance proxy_summary_reserve proxy_compact_trigger proxy_auto_compact_window
@@ -33,6 +33,30 @@ function ccyproxy {
   if [[ ! -r "$proxy_config" ]]; then
     echo "ccyproxy: CLIProxyAPI config is not readable: $proxy_config" >&2
     return 1
+  fi
+
+  local council_command
+  if (( $+commands[reason-assembly] )); then
+    council_command=reason-assembly
+  elif (( $+commands[ccycouncil] )); then
+    council_command=ccycouncil
+    if [[ -z "${_REASON_ASSEMBLY_LEGACY_NOTICE:-}" ]]; then
+      print -u2 -- "ccyproxy: warning: using deprecated ccycouncil fallback; install reason-assembly"
+      typeset -g _REASON_ASSEMBLY_LEGACY_NOTICE=1
+    fi
+  else
+    print -u2 -- "ccyproxy: warning: reason-assembly is unavailable; continuing with live raw-model filtering"
+    council_command=
+  fi
+
+  if [[ "$council_command" == ccycouncil ]]; then
+    if ! REASON_ASSEMBLY_SUPPRESS_DEPRECATION=1 CCYPROXY_CONFIG="$proxy_config" command ccycouncil sync --json >/dev/null; then
+      print -u2 -- "ccyproxy: warning: catalogue synchronization failed; continuing with live raw-model filtering"
+    fi
+  elif [[ "$council_command" == reason-assembly ]]; then
+    if ! CCYPROXY_CONFIG="$proxy_config" command reason-assembly sync --json >/dev/null; then
+      print -u2 -- "ccyproxy: warning: catalogue synchronization failed; continuing with live raw-model filtering"
+    fi
   fi
 
   local -a proxy_connection
@@ -72,14 +96,20 @@ function ccyproxy {
       echo "ccyproxy: CLIProxyAPI model metadata is unavailable at $proxy_base" >&2
       return 1
     }
+  proxy_raw_ids="$(printf '%s' "$proxy_models" | ruby -rjson -e '
+    puts JSON.generate(JSON.parse(STDIN.read).fetch("data", []).map { |m| m["id"] }.compact.uniq.sort)
+  ' 2>/dev/null)" || proxy_raw_ids='[]'
 
   case "${1:-}" in
     --list-models)
-      printf '%s' "$proxy_catalog" | ruby -rjson -e '
+      printf '%s' "$proxy_catalog" | PROXY_RAW_IDS="$proxy_raw_ids" ruby -rjson -e '
+        raw_ids = JSON.parse(ENV.fetch("PROXY_RAW_IDS"))
         models = JSON.parse(STDIN.read).fetch("models", [])
-        models.sort_by { |m| m["slug"].to_s }.each do |m|
+        by_slug = models.each_with_object({}) { |m, out| out[m["slug"]] = m }
+        raw_ids.each do |slug|
+          m = by_slug[slug] || {"slug" => slug}
           availability = m["credential_availability"] || {}
-          status = availability["status"] || "unknown"
+          status = by_slug[slug] ? (availability["status"] || "unknown") : "listed-only"
           eligible = availability.key?("eligible_credentials") ? "#{availability["eligible_credentials"]}/#{availability["total_credentials"]}" : "-"
           puts "%-48s %10s %-11s %s" % [m["slug"], m["context_window"] || m["max_context_window"] || "unknown", status, eligible]
         end
@@ -98,11 +128,14 @@ function ccyproxy {
         puts JSON.parse(ENV.fetch("PROXY_ROUTES")).map { |id| "  #{id}" }
       '
       printf 'Models:\n'
-      printf '%s' "$proxy_catalog" | ruby -rjson -e '
+      printf '%s' "$proxy_catalog" | PROXY_RAW_IDS="$proxy_raw_ids" ruby -rjson -e '
+        raw_ids = JSON.parse(ENV.fetch("PROXY_RAW_IDS"))
         models = JSON.parse(STDIN.read).fetch("models", [])
-        models.sort_by { |m| m["slug"].to_s }.each do |m|
+        by_slug = models.each_with_object({}) { |m, out| out[m["slug"]] = m }
+        raw_ids.each do |slug|
+          m = by_slug[slug] || {"slug" => slug}
           availability = m["credential_availability"] || {}
-          status = availability["status"] || "unknown"
+          status = by_slug[slug] ? (availability["status"] || "unknown") : "listed-only"
           eligible = availability.key?("eligible_credentials") ? "#{availability["eligible_credentials"]}/#{availability["total_credentials"]}" : "-"
           puts "  %-46s %10s %-11s %s" % [m["slug"], m["context_window"] || m["max_context_window"] || "unknown", status, eligible]
         end
@@ -153,8 +186,9 @@ function ccyproxy {
 
   proxy_requested_model="$proxy_model"
   proxy_model="$(printf '%s' "$proxy_catalog" |
-    PROXY_MODEL="$proxy_model" PROXY_ROUTE_CONFIG="$proxy_route_config" ruby -rjson -e '
-      models = JSON.parse(STDIN.read).fetch("models", [])
+    PROXY_MODEL="$proxy_model" PROXY_ROUTE_CONFIG="$proxy_route_config" PROXY_RAW_IDS="$proxy_raw_ids" ruby -rjson -e '
+      raw_ids = JSON.parse(ENV.fetch("PROXY_RAW_IDS"))
+      models = JSON.parse(STDIN.read).fetch("models", []).select { |m| raw_ids.include?(m["slug"]) }
       by_slug = models.each_with_object({}) { |m, out| out[m["slug"]] = m }
       selected = ENV.fetch("PROXY_MODEL")
       if by_slug[selected]
@@ -176,8 +210,9 @@ function ccyproxy {
   fi
 
   if [[ -z "$proxy_haiku_model" ]]; then
-    proxy_haiku_model="$(printf '%s' "$proxy_catalog" | PROXY_MAIN_MODEL="$proxy_model" ruby -rjson -e '
-      models = JSON.parse(STDIN.read).fetch("models", [])
+    proxy_haiku_model="$(printf '%s' "$proxy_catalog" | PROXY_MAIN_MODEL="$proxy_model" PROXY_RAW_IDS="$proxy_raw_ids" ruby -rjson -e '
+      raw_ids = JSON.parse(ENV.fetch("PROXY_RAW_IDS"))
+      models = JSON.parse(STDIN.read).fetch("models", []).select { |m| raw_ids.include?(m["slug"]) }
       by_slug = models.each_with_object({}) { |m, out| out[m["slug"]] = m }
       preferred = %w[gpt-5.6-luna gpt-5.4-mini gemini-3.1-flash-lite gemini-3-flash]
       selected = preferred.find do |slug|
@@ -203,8 +238,9 @@ function ccyproxy {
   fi
 
   proxy_availability_error="$(printf '%s' "$proxy_catalog" |
-    PROXY_MODELS="${proxy_model},${proxy_haiku_model}" PROXY_ROUTE_CONFIG="$proxy_route_config" ruby -rjson -rtime -e '
-      catalog = JSON.parse(STDIN.read).fetch("models", [])
+    PROXY_MODELS="${proxy_model},${proxy_haiku_model}" PROXY_ROUTE_CONFIG="$proxy_route_config" PROXY_RAW_IDS="$proxy_raw_ids" ruby -rjson -rtime -e '
+      raw_ids = JSON.parse(ENV.fetch("PROXY_RAW_IDS"))
+      catalog = JSON.parse(STDIN.read).fetch("models", []).select { |m| raw_ids.include?(m["slug"]) }
       by_slug = catalog.each_with_object({}) { |m, out| out[m["slug"]] = m }
       routes = JSON.parse(ENV.fetch("PROXY_ROUTE_CONFIG"))
       resolve_all = lambda do |selected, seen = []|
@@ -263,8 +299,9 @@ function ccyproxy {
 
   local -a proxy_capacity
   proxy_capacity=("${(@f)$(printf '%s' "$proxy_catalog" |
-    PROXY_MODEL="$proxy_model" ruby -rjson -e '
-      model = JSON.parse(STDIN.read).fetch("models", []).find { |m| m["slug"] == ENV.fetch("PROXY_MODEL") }
+    PROXY_MODEL="$proxy_model" PROXY_RAW_IDS="$proxy_raw_ids" ruby -rjson -e '
+      raw_ids = JSON.parse(ENV.fetch("PROXY_RAW_IDS"))
+      model = JSON.parse(STDIN.read).fetch("models", []).find { |m| m["slug"] == ENV.fetch("PROXY_MODEL") && raw_ids.include?(m["slug"]) }
       exit 1 unless model
       puts model["context_window"].to_i
       puts model["max_output_tokens"].to_i
