@@ -176,3 +176,152 @@ func TestManager_ResetQuotaClearsRuntimeAndRegistryState(t *testing.T) {
 		t.Fatalf("registry model count after reset = %d, want 1", count)
 	}
 }
+
+func TestManager_ReconcileRegistryModelStatesPreservesActiveCooldown(t *testing.T) {
+	manager := NewManager(nil, nil, nil)
+	ctx := context.Background()
+	authID := "reconcile-active-cooldown-auth"
+	model := "reconcile-active-cooldown-model"
+	next := time.Now().Add(2 * time.Hour).Round(time.Second)
+
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(authID, "claude", []*registry.ModelInfo{{ID: model}})
+	t.Cleanup(func() {
+		reg.UnregisterClient(authID)
+	})
+
+	if _, errRegister := manager.Register(ctx, &Auth{
+		ID:       authID,
+		Provider: "claude",
+		Status:   StatusError,
+		ModelStates: map[string]*ModelState{
+			model: {
+				Status:         StatusError,
+				StatusMessage:  "quota exhausted",
+				Unavailable:    true,
+				NextRetryAfter: next,
+				Quota:          QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: next},
+			},
+		},
+	}); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	reg.SetModelQuotaExceeded(authID, model)
+	reg.SuspendClientModel(authID, model, "quota")
+	if count := reg.GetModelCount(model); count != 0 {
+		t.Fatalf("registry model count before refresh = %d, want 0", count)
+	}
+
+	// OAuth refresh re-registers the same client/model and clears the registry
+	// snapshot before Manager reconciliation runs.
+	reg.RegisterClient(authID, "claude", []*registry.ModelInfo{{ID: model}})
+	if count := reg.GetModelCount(model); count != 1 {
+		t.Fatalf("registry model count immediately after refresh = %d, want 1", count)
+	}
+
+	manager.ReconcileRegistryModelStates(ctx, authID)
+
+	updated, ok := manager.GetByID(authID)
+	if !ok || updated == nil {
+		t.Fatal("expected reconciled auth")
+	}
+	state := updated.ModelStates[model]
+	if state == nil || !state.Unavailable || !state.Quota.Exceeded {
+		t.Fatalf("active cooldown was not preserved: %+v", state)
+	}
+	if !state.NextRetryAfter.Equal(next) {
+		t.Fatalf("NextRetryAfter = %v, want %v", state.NextRetryAfter, next)
+	}
+	if count := reg.GetModelCount(model); count != 0 {
+		t.Fatalf("registry model count after reconciliation = %d, want 0", count)
+	}
+}
+
+func TestManager_ReconcileRegistryModelStatesClearsExpiredCooldown(t *testing.T) {
+	manager := NewManager(nil, nil, nil)
+	ctx := context.Background()
+	authID := "reconcile-expired-cooldown-auth"
+	model := "reconcile-expired-cooldown-model"
+	expired := time.Now().Add(-time.Minute)
+
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(authID, "claude", []*registry.ModelInfo{{ID: model}})
+	t.Cleanup(func() {
+		reg.UnregisterClient(authID)
+	})
+
+	if _, errRegister := manager.Register(ctx, &Auth{
+		ID:       authID,
+		Provider: "claude",
+		ModelStates: map[string]*ModelState{
+			model: {
+				Status:         StatusError,
+				Unavailable:    true,
+				NextRetryAfter: expired,
+				Quota:          QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: expired},
+			},
+		},
+	}); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	manager.ReconcileRegistryModelStates(ctx, authID)
+
+	updated, ok := manager.GetByID(authID)
+	if !ok || updated == nil {
+		t.Fatal("expected reconciled auth")
+	}
+	state := updated.ModelStates[model]
+	if state == nil || !modelStateIsClean(state) {
+		t.Fatalf("expired cooldown was not reset: %+v", state)
+	}
+	if count := reg.GetModelCount(model); count != 1 {
+		t.Fatalf("registry model count after expired reconciliation = %d, want 1", count)
+	}
+}
+
+func TestManager_AvailabilityForModelReportsEligibilityAndCooldown(t *testing.T) {
+	manager := NewManager(nil, nil, nil)
+	ctx := context.Background()
+	model := "availability-summary-model"
+	next := time.Now().Add(time.Hour)
+	auths := []*Auth{
+		{ID: "availability-eligible-auth", Provider: "claude", Status: StatusActive},
+		{
+			ID:       "availability-cooling-auth",
+			Provider: "claude",
+			Status:   StatusError,
+			ModelStates: map[string]*ModelState{
+				model: {
+					Status:         StatusError,
+					Unavailable:    true,
+					NextRetryAfter: next,
+					Quota:          QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: next},
+				},
+			},
+		},
+		{ID: "availability-disabled-auth", Provider: "claude", Status: StatusDisabled, Disabled: true},
+	}
+
+	reg := registry.GetGlobalRegistry()
+	for _, candidate := range auths {
+		reg.RegisterClient(candidate.ID, candidate.Provider, []*registry.ModelInfo{{ID: model}})
+		if _, errRegister := manager.Register(ctx, candidate); errRegister != nil {
+			t.Fatalf("register %s: %v", candidate.ID, errRegister)
+		}
+	}
+	t.Cleanup(func() {
+		for _, candidate := range auths {
+			reg.UnregisterClient(candidate.ID)
+		}
+	})
+
+	summary := manager.AvailabilityForModel(model)
+	if summary.TotalCredentials != 3 || summary.EligibleCredentials != 1 || summary.CoolingCredentials != 1 || summary.BlockedCredentials != 1 {
+		t.Fatalf("AvailabilityForModel() = %+v", summary)
+	}
+	if summary.CooldownUntil.IsZero() || summary.CooldownUntil.Sub(next) > time.Second || next.Sub(summary.CooldownUntil) > time.Second {
+		t.Fatalf("CooldownUntil = %v, want %v", summary.CooldownUntil, next)
+	}
+}

@@ -112,17 +112,17 @@ func (m *Manager) RefreshSchedulerAll() {
 // ReconcileRegistryModelStates aligns per-model runtime state with the current
 // registry snapshot for one auth.
 //
-// Supported models are reset to a clean state because re-registration already
-// cleared the registry-side cooldown/suspension snapshot. ModelStates for
-// models that are no longer present in the registry are pruned entirely so
-// renamed/removed models cannot keep auth-level status stale.
+// Re-registration clears the registry-side cooldown/suspension snapshot, but it
+// must not make a credential eligible before the provider's retry window. Active
+// cooldowns are therefore re-applied to the registry. Expired state is reset and
+// state for models that are no longer registered is pruned.
 func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID string) {
 	if m == nil || authID == "" {
 		return
 	}
 
 	supportedModels := registry.GetGlobalRegistry().GetModelsForClient(authID)
-	supported := make(map[string]struct{}, len(supportedModels))
+	supported := make(map[string]string, len(supportedModels))
 	for _, model := range supportedModels {
 		if model == nil {
 			continue
@@ -131,22 +131,28 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 		if modelKey == "" {
 			continue
 		}
-		supported[modelKey] = struct{}{}
+		supported[modelKey] = model.ID
 	}
 
+	type registryCooldown struct {
+		model string
+		quota bool
+	}
+	reapply := make([]registryCooldown, 0)
 	var snapshot *Auth
 	now := time.Now()
+	changed := false
 
 	m.mu.Lock()
 	auth, ok := m.auths[authID]
 	if ok && auth != nil && len(auth.ModelStates) > 0 {
-		changed := false
 		for modelKey, state := range auth.ModelStates {
 			baseModel := canonicalModelKey(modelKey)
 			if baseModel == "" {
 				baseModel = strings.TrimSpace(modelKey)
 			}
-			if _, supportedModel := supported[baseModel]; !supportedModel {
+			registeredModel, supportedModel := supported[baseModel]
+			if !supportedModel {
 				// Drop state for models that disappeared from the current registry
 				// snapshot. Keeping them around leaks stale errors into auth-level
 				// status, management output, and websocket fallback checks.
@@ -158,6 +164,13 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 				continue
 			}
 			if modelStateIsClean(state) {
+				continue
+			}
+			if state.Unavailable && !state.NextRetryAfter.IsZero() && state.NextRetryAfter.After(now) {
+				reapply = append(reapply, registryCooldown{
+					model: registeredModel,
+					quota: state.Quota.Exceeded,
+				})
 				continue
 			}
 			resetModelState(state, now)
@@ -177,14 +190,95 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 			if errPersist := m.persist(ctx, auth); errPersist != nil {
 				logEntryWithRequestID(ctx).WithField("auth_id", auth.ID).Warnf("failed to persist auth changes during model state reconciliation: %v", errPersist)
 			}
+		}
+		if changed || len(reapply) > 0 {
 			snapshot = auth.Clone()
 		}
 	}
 	m.mu.Unlock()
 
+	modelRegistry := registry.GetGlobalRegistry()
+	for _, cooldown := range reapply {
+		if cooldown.quota {
+			modelRegistry.SetModelQuotaExceeded(authID, cooldown.model)
+			modelRegistry.SuspendClientModel(authID, cooldown.model, "quota")
+			continue
+		}
+		modelRegistry.SuspendClientModel(authID, cooldown.model, "cooldown")
+	}
 	if m.scheduler != nil && snapshot != nil {
 		m.scheduler.upsertAuth(snapshot)
 	}
+	if changed {
+		m.persistCooldownStates(ctx)
+	}
+}
+
+// ModelAvailability summarizes the credential eligibility for a registered model.
+// It is intended for discovery clients that need to avoid launching a request
+// which the selector already knows cannot be served.
+type ModelAvailability struct {
+	TotalCredentials    int
+	EligibleCredentials int
+	CoolingCredentials  int
+	BlockedCredentials  int
+	CooldownUntil       time.Time
+}
+
+// AvailabilityForModel returns a point-in-time eligibility summary for model.
+func (m *Manager) AvailabilityForModel(model string) ModelAvailability {
+	var availability ModelAvailability
+	if m == nil {
+		return availability
+	}
+
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return availability
+	}
+	modelKey := canonicalModelKey(model)
+	if modelKey == "" {
+		modelKey = model
+	}
+
+	now := time.Now()
+	modelRegistry := registry.GetGlobalRegistry()
+	for _, auth := range m.List() {
+		if auth == nil || !authSupportsRegisteredModel(modelRegistry.GetModelsForClient(auth.ID), modelKey) {
+			continue
+		}
+		availability.TotalCredentials++
+		blocked, reason, next := isAuthBlockedForModel(auth, modelKey, now)
+		if !blocked {
+			availability.EligibleCredentials++
+			continue
+		}
+		if reason == blockReasonCooldown {
+			availability.CoolingCredentials++
+			if !next.IsZero() && (availability.CooldownUntil.IsZero() || next.Before(availability.CooldownUntil)) {
+				availability.CooldownUntil = next
+			}
+			continue
+		}
+		availability.BlockedCredentials++
+	}
+	return availability
+}
+
+func authSupportsRegisteredModel(models []*registry.ModelInfo, requestedModel string) bool {
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		modelKey := canonicalModelKey(model.ID)
+		if modelKey == "" {
+			modelKey = strings.TrimSpace(model.ID)
+		}
+		if strings.EqualFold(modelKey, requestedModel) {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Manager) SetSelector(selector Selector) {
